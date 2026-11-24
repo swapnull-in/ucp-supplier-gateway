@@ -23,6 +23,17 @@ export interface QuoteState {
   acceptedId?: string;
   /** Line items and currency the quotation (or pending proposal) was made for. */
   binding?: string;
+  /** A change the Buyer didn't ask for (e.g. a withdrawal), reported once as `quote_changed`. */
+  notice?: string;
+}
+
+/** A quotation the Business issued outside any cart (sales desk, CPQ, email), accepted by id. */
+export interface ExternalQuote {
+  id: string;
+  accountId: string;
+  binding: string;
+  subtotal: number;
+  expiresAt: Date;
 }
 
 export interface QuoteRequest {
@@ -34,7 +45,9 @@ export type QuoteDecision =
   | { decision: "quote"; subtotal: number; message?: string }
   | { decision: "accept"; subtotal: number; message?: string }
   | { decision: "review"; message?: string }
-  | { decision: "decline"; message?: string };
+  | { decision: "decline"; message?: string }
+  /** The Business won't consider this proposal at all (e.g. `{}` from a policy that needs a figure). */
+  | { decision: "unavailable"; message: string };
 
 /** How a Business answers a proposal. Rules, a model or a person; the protocol doesn't care. */
 export interface QuotePolicy {
@@ -45,13 +58,20 @@ export interface QuotePolicy {
  * Default policy: an empty proposal gets a firm quotation at the current account price (a price
  * lock); proposals within `autoAcceptPct` below it are accepted; within `reviewPct` they wait for
  * a person; anything lower is declined. A proposal above the current price is accepted at the
- * current price, never at the higher one.
+ * current price, never at the higher one. With `quoteOnEmpty: false`, `{}` is answered with
+ * `quote_unavailable` instead, as #929's thread allows for a Business whose answer would reveal
+ * its floor.
  */
 export class ThresholdQuotePolicy implements QuotePolicy {
-  constructor(private readonly autoAcceptPct = 0.03, private readonly reviewPct = 0.1) {}
+  constructor(
+    private readonly autoAcceptPct = 0.03,
+    private readonly reviewPct = 0.1,
+    private readonly quoteOnEmpty = true,
+  ) {}
 
   evaluate({ proposal, currentSubtotal }: { proposal: QuoteProposal; currentSubtotal: number }): QuoteDecision {
     if (proposal.subtotal === undefined) {
+      if (!this.quoteOnEmpty) return { decision: "unavailable", message: "Propose a subtotal for these line items to request a quotation." };
       return { decision: "quote", subtotal: currentSubtotal, message: "Firm price for these line items until the quotation expires." };
     }
     if (proposal.subtotal >= currentSubtotal) return { decision: "accept", subtotal: currentSubtotal };
@@ -72,6 +92,8 @@ export interface QuoteContext {
   now: Date;
   quotationTtlMs: number;
   policy: QuotePolicy;
+  /** Resolves an `accepted_id` the cart didn't issue (an out-of-band quotation), if any. */
+  resolveExternal?: (id: string) => ExternalQuote | undefined;
 }
 
 const OPEN: ReadonlySet<QuoteStatus | undefined> = new Set(["pending", "quoted", "accepted"]);
@@ -86,6 +108,11 @@ const changed = (content: string): PricingMessage => ({ type: "warning", code: "
 export function advanceQuote(prev: QuoteState, req: QuoteRequest | undefined, ctx: QuoteContext): { state: QuoteState; messages: PricingMessage[] } {
   const messages: PricingMessage[] = [];
   let state: QuoteState = { ...prev };
+
+  if (state.notice) {
+    messages.push(changed(state.notice));
+    delete state.notice;
+  }
 
   // A lapsed, unaccepted quotation is expired; an accepted one never lapses.
   if (state.status === "quoted" && state.expiresAt && ctx.now >= state.expiresAt) state.status = "expired";
@@ -123,6 +150,9 @@ export function advanceQuote(prev: QuoteState, req: QuoteRequest | undefined, ct
       case "decline":
         state = { ...base, status: "declined" };
         break;
+      case "unavailable":
+        messages.push({ type: "error", code: "quote_unavailable", severity: "recoverable", path: "$.quote", content: decision.message });
+        break;
     }
     return { state, messages };
   }
@@ -132,6 +162,12 @@ export function advanceQuote(prev: QuoteState, req: QuoteRequest | undefined, ct
     if (state.status === "quoted" && state.id === req.accepted_id && state.binding === ctx.binding) {
       state = { ...state, status: "accepted", acceptedId: req.accepted_id };
       delete state.proposal;
+      return { state, messages };
+    }
+    // An out-of-band quotation binds by item ids, quantities and currency, not line ids (#929 §4, §6).
+    const external = req.accepted_id === state.id ? undefined : ctx.resolveExternal?.(req.accepted_id);
+    if (external && external.accountId === ctx.accountId && external.binding === ctx.binding && ctx.now < external.expiresAt) {
+      state = { status: "accepted", id: external.id, subtotal: external.subtotal, acceptedId: external.id, binding: ctx.binding };
       return { state, messages };
     }
     messages.push(changed(`Quotation ${req.accepted_id} can't be accepted: it is unknown, superseded, expired or for different line items.`));
@@ -150,6 +186,16 @@ export function answerPending(prev: QuoteState, answer: { status: "quoted" | "de
     next.subtotal = answer.subtotal;
     next.expiresAt = new Date(now.getTime() + ttlMs);
   }
+  return next;
+}
+
+/** Business-side withdrawal of a quoted or accepted quotation; the id and subtotal are kept (#929 §6). */
+export function withdrawQuote(prev: QuoteState): QuoteState {
+  if (prev.status !== "quoted" && prev.status !== "accepted") throw new Error(`Nothing to withdraw (status: ${prev.status ?? "idle"})`);
+  const next: QuoteState = { ...prev, status: "withdrawn", notice: `The Business withdrew quotation ${prev.id}.` };
+  // The cycle is closed, so the Buyer's proposal and acceptance are no longer echoed.
+  delete next.proposal;
+  delete next.acceptedId;
   return next;
 }
 

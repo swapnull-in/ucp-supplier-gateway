@@ -118,7 +118,12 @@ export function priceLines(requests: LineRequest[], products: CatalogProduct[], 
   };
 }
 
-/** Identity of what a quotation prices: item ids, quantities and currency (UCP #929 §6). */
-export function lineBinding(priced: Pick<PricedLines, "lines" | "currency">): string {
-  return JSON.stringify([priced.currency, ...priced.lines.map((l) => [l.itemId, l.quantity])]);
+/**
+ * Identity of what a quotation prices: item ids, quantities and currency (UCP #929 §6).
+ * Compared as a multiset, so line order and line ids don't matter; that is what lets a
+ * quotation issued outside the cart (with no line ids of its own) bind to a cart's lines.
+ */
+export function lineBinding(priced: { currency: string; lines: readonly { itemId: string; quantity: number }[] }): string {
+  const pairs = priced.lines.map((l) => [l.itemId, l.quantity] as const).sort(([a, qa], [b, qb]) => (a < b ? -1 : a > b ? 1 : qa - qb));
+  return JSON.stringify([priced.currency, ...pairs]);
 }

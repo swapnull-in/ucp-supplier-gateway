@@ -68,4 +68,11 @@ describe("priceLines", () => {
     expect(lineBinding(priceLines([{ itemId: "B1", quantity: 5 }], all))).toBe(a);
     expect(lineBinding(priceLines([{ itemId: "B1", quantity: 6 }], all))).not.toBe(a);
   });
+
+  it("compares line items as a set, so order doesn't matter but extra lines do", () => {
+    const ab = lineBinding({ currency: "USD", lines: [{ itemId: "A", quantity: 1 }, { itemId: "B", quantity: 2 }] });
+    expect(lineBinding({ currency: "USD", lines: [{ itemId: "B", quantity: 2 }, { itemId: "A", quantity: 1 }] })).toBe(ab);
+    expect(lineBinding({ currency: "USD", lines: [{ itemId: "A", quantity: 1 }, { itemId: "B", quantity: 2 }, { itemId: "C", quantity: 1 }] })).not.toBe(ab);
+    expect(lineBinding({ currency: "EUR", lines: [{ itemId: "A", quantity: 1 }, { itemId: "B", quantity: 2 }] })).not.toBe(ab);
+  });
 });

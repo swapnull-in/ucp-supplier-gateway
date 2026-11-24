@@ -49,7 +49,7 @@ Requires Node.js 22+ and pnpm.
 
 ```bash
 pnpm install
-pnpm test          # 69 tests, including schema conformance and a real MCP client
+pnpm test          # 79 tests, including schema conformance and a real MCP client
 pnpm start         # mock SAP OCC on :9002, gateway on :8080
 ```
 
@@ -88,12 +88,23 @@ token as an `Authorization: Bearer` header, and include UCP metadata in every ca
 |---|---|---|
 | `{ "proposal": {} }` | Firm quotation at the current account price | `quoted` with `id` and `expires_at` (a price lock) |
 | `{ "proposal": { "subtotal": … } }` within 3% below current | Accept | `accepted`; totals carry one signed `quote` entry |
-| … within 10% below | Send to a person | `pending` until answered via `POST /admin/carts/:id/quote` (set `ADMIN_TOKEN`) |
+| … within 10% below | Send to a person | `pending` until a person answers (see the admin routes below) |
 | … lower | Decline | `declined` |
 | `{ "accepted_id": "qt_…" }` | Accept that quotation if it's current | `accepted`, or `quote_changed` if stale |
+| `{ "accepted_id": "qt_…" }` for a quotation issued **outside the cart** | Accept if it's for this account, the same items and quantities (any order), and unexpired | `accepted`, or `quote_changed` |
 | Line items or quantities change | — | Quotation invalidated, `quote_changed` warning |
+| *(Business withdraws a `quoted` or `accepted` quotation)* | — | `withdrawn`, id and subtotal kept, price removed, `quote_changed` reported once |
 
 The policy is a pluggable interface (`QuotePolicy`), so rules, a model or a sales desk can decide.
+`new ThresholdQuotePolicy(0.03, 0.1, false)` answers `{}` with `quote_unavailable` instead of a
+quotation, for a Business whose answer would reveal its floor (the MAY discussed on #929).
+
+With `ADMIN_TOKEN` set, two routes stand in for a sales desk:
+
+| Route | Does |
+|---|---|
+| `POST /admin/carts/:id/quote` | `{"status":"quoted","subtotal":…}` or `{"status":"declined"}` answers a pending proposal; `{"status":"withdrawn"}` revokes a quotation |
+| `POST /admin/quotes` | Issues a quotation outside any cart: `{"account_id","currency","subtotal","line_items"}`; the Buyer accepts it on a cart by id |
 
 ## Architecture
 

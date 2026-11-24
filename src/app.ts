@@ -5,6 +5,7 @@ import { registerMcp } from "./mcp.js";
 import { type IdempotencyStore, InMemoryIdempotencyStore } from "./idempotency.js";
 import type { AccountResolver } from "./ucp/accounts.js";
 import { type CartStore, InMemoryCartStore } from "./ucp/cart.js";
+import { InMemoryQuoteBook, type QuoteBook } from "./ucp/quote-book.js";
 import { registerCartRoutes } from "./ucp/cart-routes.js";
 import { errorResponse } from "./ucp/catalog.js";
 import { businessProfile } from "./ucp/profile.js";
@@ -24,9 +25,10 @@ export interface AppOptions {
   carts?: CartStore;
   idempotency?: IdempotencyStore;
   quotePolicy?: QuotePolicy;
+  quoteBook?: QuoteBook;
   cartTtlMs?: number;
   quotationTtlMs?: number;
-  /** Enables POST /admin/carts/:id/quote (answering pending proposals) when set. */
+  /** Enables the admin routes (answer or withdraw cart quotes, issue out-of-band quotes) when set. */
   adminToken?: string;
   now?: () => Date;
   logger?: boolean;
@@ -87,6 +89,7 @@ export function buildApp(opts: AppOptions): FastifyInstance {
     carts: opts.carts ?? new InMemoryCartStore(),
     idempotency: opts.idempotency ?? new InMemoryIdempotencyStore(),
     quotePolicy: opts.quotePolicy ?? new ThresholdQuotePolicy(),
+    quoteBook: opts.quoteBook ?? new InMemoryQuoteBook(),
     quoteCapability,
     cartTtlMs: opts.cartTtlMs ?? 7 * DAY_MS,
     quotationTtlMs: opts.quotationTtlMs ?? 7 * DAY_MS,

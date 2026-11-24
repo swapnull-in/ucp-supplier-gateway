@@ -200,6 +200,55 @@ describe("quote extension (UCP #929) on the cart", () => {
   });
 });
 
+describe("Business-side flows: withdraw and out-of-band quotations", () => {
+  const ADMIN = { "x-admin-token": "admin-secret" };
+  const admin = (url: string, payload: object) => app.inject({ method: "POST", url, headers: ADMIN, payload });
+
+  it("withdrawing an accepted quotation removes the price and tells the Buyer once", async () => {
+    const cart = (await create({ line_items: lines(["SG-220", 100]), quote: { proposal: { subtotal: 385_000 } } })).json();
+    expect(cart.quote.status).toBe("accepted");
+    expect((await admin(`/admin/carts/${cart.id}/quote`, { status: "withdrawn" })).statusCode).toBe(200);
+
+    const after = (await get(cart.id)).json();
+    expectValid(schemas.validateAbsolute(CART_WITH_QUOTE, after));
+    expect(after.quote).toEqual({ status: "withdrawn", id: cart.quote.id, subtotal: 385_000 });
+    expect(totalOf(after, "quote")).toBeUndefined();
+    expect(totalOf(after, "total")).toBe(393_600);
+    expect(after.messages).toContainEqual(expect.objectContaining({ code: "quote_changed" }));
+    expect((await get(cart.id)).json().messages ?? []).not.toContainEqual(expect.objectContaining({ code: "quote_changed" }));
+  });
+
+  it("a sales-desk quotation is accepted on a cart with the same items in any order", async () => {
+    const issued = await admin("/admin/quotes", { account_id: "acme_industrial", currency: "USD", subtotal: 380_000, line_items: lines(["SG-220", 50], ["HX-1040", 100]) });
+    expect(issued.statusCode).toBe(201);
+    const qid = issued.json().id;
+
+    const cart = (await create({ line_items: lines(["HX-1040", 100], ["SG-220", 50]), quote: { accepted_id: qid } })).json();
+    expectValid(schemas.validateAbsolute(CART_WITH_QUOTE, cart));
+    expect(cart.quote).toMatchObject({ status: "accepted", id: qid, accepted_id: qid, subtotal: 380_000 });
+    // Current account price: 100 x 19.40 (100+ break) + 50 x 39.36 = 3,908.00; the desk quoted 3,800.00
+    expect(totalOf(cart, "quote")).toBe(380_000 - 390_800);
+    expect(totalOf(cart, "total")).toBe(380_000);
+  });
+
+  it("fails closed with quote_changed for extra lines or another account", async () => {
+    const qid = (await admin("/admin/quotes", { account_id: "acme_industrial", currency: "USD", subtotal: 30_000, line_items: lines(["SG-220", 10]) })).json().id;
+
+    const extra = (await create({ line_items: lines(["SG-220", 10], ["HX-1040", 5]), quote: { accepted_id: qid } })).json();
+    expect(extra.quote).toEqual({});
+    expect(extra.messages).toContainEqual(expect.objectContaining({ code: "quote_changed" }));
+
+    const other = (await create({ line_items: lines(["SG-220", 10]), quote: { accepted_id: qid } }, NORTHWIND)).json();
+    expect(other.quote).toEqual({});
+    expect(other.messages).toContainEqual(expect.objectContaining({ code: "quote_changed" }));
+  });
+
+  it("admin routes require the admin token and valid input", async () => {
+    expect((await app.inject({ method: "POST", url: "/admin/quotes", payload: {} })).statusCode).toBe(401);
+    expect((await admin("/admin/quotes", { account_id: "acme_industrial", currency: "usd", subtotal: 1, line_items: lines(["SG-220", 1]) })).statusCode).toBe(400);
+  });
+});
+
 describe("idempotency on carts", () => {
   const body = JSON.stringify({ line_items: lines(["SG-220", 3]) });
   const post = (payload: string, key: string, headers = ACME) =>

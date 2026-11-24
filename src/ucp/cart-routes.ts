@@ -6,7 +6,8 @@ import { type LineRequest, lineBinding, priceLines } from "../pricing.js";
 import { type AccountResolver, SCOPE_CART_MANAGE } from "./accounts.js";
 import { type Cart, type CartStore, toUcpCart } from "./cart.js";
 import { errorResponse } from "./catalog.js";
-import { type QuotePolicy, type QuoteRequest, advanceQuote, answerPending } from "./quote.js";
+import { type ExternalQuote, type QuotePolicy, type QuoteRequest, advanceQuote, answerPending, withdrawQuote } from "./quote.js";
+import type { QuoteBook } from "./quote-book.js";
 
 export interface CartDeps {
   backend: CommerceBackend;
@@ -14,11 +15,13 @@ export interface CartDeps {
   carts: CartStore;
   idempotency: IdempotencyStore;
   quotePolicy: QuotePolicy;
+  /** Quotations issued outside carts, acceptable on a cart by id. */
+  quoteBook: QuoteBook;
   quoteCapability: string;
   cartTtlMs: number;
   quotationTtlMs: number;
   now: () => Date;
-  /** Enables the Business-side review route for pending proposals when set. */
+  /** Enables the Business-side admin routes (answer, withdraw, issue quotations) when set. */
   adminToken?: string;
 }
 
@@ -53,7 +56,8 @@ export function registerCartRoutes(app: FastifyInstance, base: string, deps: Car
         createdAt: now,
         expiresAt: new Date(now.getTime() + deps.cartTtlMs),
       });
-      const step = advanceQuote(cart.quote, input.quote, quoteContext(deps, priced, caller, now));
+      const external = await lookupExternal(deps, input.quote);
+      const step = advanceQuote(cart.quote, input.quote, quoteContext(deps, priced, caller, now, external));
       cart.quote = step.state;
       await deps.carts.save(cart);
       return { statusCode: 201, body: toUcpCart(cart, priced, step.messages, deps.quoteCapability) };
@@ -88,7 +92,8 @@ export function registerCartRoutes(app: FastifyInstance, base: string, deps: Car
       const products = await deps.backend.getProducts(input.lines.map((l) => l.itemId), caller.account);
       const priced = priceLines(input.lines, products);
       cart.lines = input.lines;
-      const step = advanceQuote(cart.quote, input.quote, quoteContext(deps, priced, caller, deps.now()));
+      const external = await lookupExternal(deps, input.quote);
+      const step = advanceQuote(cart.quote, input.quote, quoteContext(deps, priced, caller, deps.now(), external));
       cart.quote = step.state;
       await deps.carts.save(cart);
       return { statusCode: 200, body: toUcpCart(cart, priced, step.messages, deps.quoteCapability) };
@@ -110,7 +115,8 @@ export function registerCartRoutes(app: FastifyInstance, base: string, deps: Car
   });
 
   if (deps.adminToken) {
-    // Business-side answer to a pending proposal, standing in for a sales rep's review queue.
+    // Business-side answer to a pending proposal (quoted / declined), or withdrawal of a quoted or
+    // accepted quotation, standing in for a sales rep's review queue.
     app.post<{ Params: { id: string }; Body: { status?: unknown; subtotal?: unknown; message?: unknown } }>(
       `/admin/carts/:id/quote`,
       async (req, reply) => {
@@ -118,10 +124,15 @@ export function registerCartRoutes(app: FastifyInstance, base: string, deps: Car
         const cart = await deps.carts.get(req.params.id);
         if (!cart) return reply.code(404).send(errorResponse("not_found", "Cart not found"));
         const { status, subtotal, message } = req.body ?? {};
-        if ((status !== "quoted" && status !== "declined") || (subtotal !== undefined && !isAmount(subtotal))) {
-          return reply.code(400).send(errorResponse("invalid_request", 'status must be "quoted" (with subtotal) or "declined"'));
+        if ((status !== "quoted" && status !== "declined" && status !== "withdrawn") || (subtotal !== undefined && !isAmount(subtotal))) {
+          return reply.code(400).send(errorResponse("invalid_request", 'status must be "quoted" (with subtotal), "declined" or "withdrawn"'));
         }
         try {
+          if (status === "withdrawn") {
+            cart.quote = withdrawQuote(cart.quote);
+            await deps.carts.save(cart);
+            return { id: cart.id, quote: cart.quote.status };
+          }
           const answer: { status: "quoted" | "declined"; subtotal?: number; message?: string } = { status };
           if (subtotal !== undefined) answer.subtotal = subtotal as number;
           if (typeof message === "string") answer.message = message;
@@ -133,7 +144,35 @@ export function registerCartRoutes(app: FastifyInstance, base: string, deps: Car
         return { id: cart.id, quote: cart.quote.status };
       },
     );
+
+    // A quotation issued outside any cart (sales desk, CPQ, email) to a buyer account. The Buyer
+    // accepts it on a cart holding the same items and quantities, by `quote.accepted_id`.
+    app.post<{ Body: { account_id?: unknown; currency?: unknown; subtotal?: unknown; line_items?: unknown; expires_in_hours?: unknown } }>(
+      `/admin/quotes`,
+      async (req, reply) => {
+        if (req.headers["x-admin-token"] !== deps.adminToken) return reply.code(401).send(errorResponse("unauthorized", "Admin token required"));
+        const { account_id, currency, subtotal, expires_in_hours } = req.body ?? {};
+        const parsed = parseCartBody({ line_items: req.body?.line_items }, false);
+        if ("error" in parsed) return reply.code(400).send(errorResponse("invalid_request", parsed.error));
+        if (typeof account_id !== "string" || typeof currency !== "string" || !/^[A-Z]{3}$/.test(currency) || !isAmount(subtotal)) {
+          return reply.code(400).send(errorResponse("invalid_request", "account_id, currency (ISO 4217) and subtotal (minor units) are required"));
+        }
+        const hours = typeof expires_in_hours === "number" && expires_in_hours > 0 ? expires_in_hours : deps.quotationTtlMs / 3600_000;
+        const quote = await deps.quoteBook.issue({
+          accountId: account_id,
+          binding: lineBinding({ currency, lines: parsed.lines }),
+          subtotal: subtotal as number,
+          expiresAt: new Date(deps.now().getTime() + hours * 3600_000),
+        });
+        return reply.code(201).send({ id: quote.id, subtotal: quote.subtotal, expires_at: quote.expiresAt.toISOString() });
+      },
+    );
   }
+}
+
+/** Fetches the out-of-band quotation an `accepted_id` names, so the pure state machine can bind it. */
+async function lookupExternal(deps: CartDeps, quote: QuoteRequest | undefined): Promise<ExternalQuote | undefined> {
+  return quote?.accepted_id ? deps.quoteBook.get(quote.accepted_id) : undefined;
 }
 
 interface Caller {
@@ -160,8 +199,9 @@ async function ownCart(id: string, owner: string, deps: CartDeps): Promise<Cart 
   return cart;
 }
 
-function quoteContext(deps: CartDeps, priced: ReturnType<typeof priceLines>, caller: Caller, now: Date) {
+function quoteContext(deps: CartDeps, priced: ReturnType<typeof priceLines>, caller: Caller, now: Date, external?: ExternalQuote) {
   return {
+    resolveExternal: (id: string) => (external?.id === id ? external : undefined),
     binding: lineBinding(priced),
     currentSubtotal: priced.subtotal,
     accountId: caller.account?.id ?? caller.owner,

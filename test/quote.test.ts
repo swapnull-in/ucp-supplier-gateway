@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { type QuoteContext, type QuoteState, ThresholdQuotePolicy, advanceQuote, answerPending, quoteAdjustment, toUcpQuote } from "../src/ucp/quote.js";
+import { type ExternalQuote, type QuoteContext, type QuoteState, ThresholdQuotePolicy, advanceQuote, answerPending, quoteAdjustment, toUcpQuote, withdrawQuote } from "../src/ucp/quote.js";
 
 // Transitions from the UCP #929 lifecycle table, for a Cart.
 
@@ -115,5 +115,54 @@ describe("invalidation and review", () => {
     expect(quoted.id).toMatch(/^qt_/);
     expect(answerPending(pending, { status: "declined" }, T0, DAY).status).toBe("declined");
     expect(() => answerPending({}, { status: "declined" }, T0, DAY)).toThrow(/No pending proposal/);
+  });
+});
+
+describe("withdrawal (Business revokes a quotation)", () => {
+  it("keeps id and subtotal, removes the totals entry, and reports quote_changed exactly once", () => {
+    const accepted = propose(98_000).state;
+    const withdrawn = withdrawQuote(accepted);
+    expect(withdrawn).toMatchObject({ status: "withdrawn", id: accepted.id, subtotal: 98_000 });
+    expect(quoteAdjustment(withdrawn, 100_000)).toBeUndefined();
+    expect(toUcpQuote(withdrawn)).toEqual({ status: "withdrawn", id: accepted.id, subtotal: 98_000 });
+
+    const first = advanceQuote(withdrawn, undefined, ctx());
+    expect(first.messages).toEqual([expect.objectContaining({ code: "quote_changed" })]);
+    expect(advanceQuote(first.state, undefined, ctx()).messages).toEqual([]);
+  });
+
+  it("only quoted or accepted quotations can be withdrawn", () => {
+    expect(() => withdrawQuote({})).toThrow(/Nothing to withdraw/);
+    expect(() => withdrawQuote(propose(92_000).state)).toThrow(/pending/);
+  });
+});
+
+describe("empty proposal policy (the MAY discussed on #929)", () => {
+  it("a policy that needs a figure answers {} with quote_unavailable and leaves state unchanged", () => {
+    const strict = ctx({ policy: new ThresholdQuotePolicy(0.03, 0.1, false) });
+    const { state, messages } = advanceQuote({}, { proposal: {} }, strict);
+    expect(state).toEqual({});
+    expect(messages).toEqual([expect.objectContaining({ type: "error", code: "quote_unavailable", severity: "recoverable" })]);
+    expect(advanceQuote({}, { proposal: { subtotal: 99_000 } }, strict).state.status).toBe("accepted");
+  });
+});
+
+describe("out-of-band quotations (accepted by id on a cart)", () => {
+  const external: ExternalQuote = { id: "qt_desk_1", accountId: "acme", binding: "lines-A", subtotal: 90_000, expiresAt: new Date(T0.getTime() + DAY) };
+  const withBook = (over: Partial<QuoteContext> = {}) => ctx({ resolveExternal: (id) => (id === external.id ? external : undefined), ...over });
+
+  it("binds when account, items and quantities match and it hasn't expired", () => {
+    const { state, messages } = advanceQuote({}, { accepted_id: "qt_desk_1" }, withBook());
+    expect(state).toMatchObject({ status: "accepted", id: "qt_desk_1", subtotal: 90_000, acceptedId: "qt_desk_1" });
+    expect(messages).toEqual([]);
+    expect(quoteAdjustment(state, 100_000)).toBe(-10_000);
+  });
+
+  it("fails closed for another account, different line items, or after expiry", () => {
+    for (const c of [withBook({ accountId: "northwind" }), withBook({ binding: "lines-B" }), withBook({ now: new Date(T0.getTime() + 2 * DAY) })]) {
+      const { state, messages } = advanceQuote({}, { accepted_id: "qt_desk_1" }, c);
+      expect(state).toEqual({});
+      expect(messages[0]).toMatchObject({ code: "quote_changed" });
+    }
   });
 });
