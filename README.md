@@ -136,6 +136,12 @@ passes UCP authority binding.
 - **No checkout, orders or payments.** Carts and quotes only.
 - **The quote extension follows a draft** (#929 / PR #930) and will change with it. It is served
   under the gateway's own namespace until `dev.ucp.common.quote` is released.
+- **An accepted quotation is held even if the buyer's price later falls.** The `quote` totals
+  entry is `quote.subtotal` minus the current line subtotals, so when the account price drops
+  below the quoted subtotal, the entry turns positive and the buyer pays more than today's price.
+  The draft spec doesn't say what should happen here; it's raised on
+  [#929](https://github.com/Universal-Commerce-Protocol/ucp/issues/929#issuecomment-7138134081),
+  and the gateway will follow whatever is agreed.
 
 ## Open design questions
 
