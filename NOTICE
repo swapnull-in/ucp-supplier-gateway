@@ -1,0 +1,8 @@
+ucp-supplier-gateway
+Copyright 2026 Swapnil Godambe
+
+This product includes JSON Schemas from the Universal Commerce Protocol
+(https://github.com/Universal-Commerce-Protocol/ucp), Copyright 2026 UCP Authors,
+licensed under the Apache License, Version 2.0:
+  - vendor/ucp-schemas/2026-08-25/  (release v2026-08-25)
+  - vendor/ucp-drafts/quote-pr930.json  (draft from pull request #930)

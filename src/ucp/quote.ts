@@ -1,0 +1,176 @@
+import { randomUUID } from "node:crypto";
+import type { PricingMessage } from "../pricing.js";
+
+// The quote extension proposed in UCP #929 (draft schema: PR #930): a `quote` property on Cart
+// with an open status vocabulary, Buyer `proposal` / `accepted_id`, and Business authority over
+// every price. Implemented here for Cart only; Checkout and Order projection come with checkout.
+
+export type QuoteStatus = "pending" | "quoted" | "accepted" | "declined" | "expired" | "withdrawn";
+
+export interface QuoteProposal {
+  subtotal?: number;
+  message?: string;
+}
+
+export interface QuoteState {
+  /** Absent when no cycle is open ("quotable, idle"). */
+  status?: QuoteStatus;
+  id?: string;
+  subtotal?: number;
+  expiresAt?: Date;
+  message?: string;
+  proposal?: QuoteProposal;
+  acceptedId?: string;
+  /** Line items and currency the quotation (or pending proposal) was made for. */
+  binding?: string;
+}
+
+export interface QuoteRequest {
+  proposal?: QuoteProposal;
+  accepted_id?: string;
+}
+
+export type QuoteDecision =
+  | { decision: "quote"; subtotal: number; message?: string }
+  | { decision: "accept"; subtotal: number; message?: string }
+  | { decision: "review"; message?: string }
+  | { decision: "decline"; message?: string };
+
+/** How a Business answers a proposal. Rules, a model or a person; the protocol doesn't care. */
+export interface QuotePolicy {
+  evaluate(input: { proposal: QuoteProposal; currentSubtotal: number; accountId: string }): QuoteDecision;
+}
+
+/**
+ * Default policy: an empty proposal gets a firm quotation at the current account price (a price
+ * lock); proposals within `autoAcceptPct` below it are accepted; within `reviewPct` they wait for
+ * a person; anything lower is declined. A proposal above the current price is accepted at the
+ * current price, never at the higher one.
+ */
+export class ThresholdQuotePolicy implements QuotePolicy {
+  constructor(private readonly autoAcceptPct = 0.03, private readonly reviewPct = 0.1) {}
+
+  evaluate({ proposal, currentSubtotal }: { proposal: QuoteProposal; currentSubtotal: number }): QuoteDecision {
+    if (proposal.subtotal === undefined) {
+      return { decision: "quote", subtotal: currentSubtotal, message: "Firm price for these line items until the quotation expires." };
+    }
+    if (proposal.subtotal >= currentSubtotal) return { decision: "accept", subtotal: currentSubtotal };
+    if (proposal.subtotal >= Math.ceil(currentSubtotal * (1 - this.autoAcceptPct))) {
+      return { decision: "accept", subtotal: proposal.subtotal };
+    }
+    if (proposal.subtotal >= Math.ceil(currentSubtotal * (1 - this.reviewPct))) {
+      return { decision: "review", message: "Your proposal is with our sales team for review." };
+    }
+    return { decision: "decline", message: "We can't offer that price for these line items." };
+  }
+}
+
+export interface QuoteContext {
+  binding: string;
+  currentSubtotal: number;
+  accountId: string;
+  now: Date;
+  quotationTtlMs: number;
+  policy: QuotePolicy;
+}
+
+const OPEN: ReadonlySet<QuoteStatus | undefined> = new Set(["pending", "quoted", "accepted"]);
+
+const changed = (content: string): PricingMessage => ({ type: "warning", code: "quote_changed", content, path: "$.quote" });
+
+/**
+ * Applies time, line-item changes and a Buyer request to the quote state, in that order.
+ * Returns the next state and any messages for the response. Never throws for Buyer mistakes:
+ * those become `quote_unavailable` or `quote_changed` messages, as #929 specifies.
+ */
+export function advanceQuote(prev: QuoteState, req: QuoteRequest | undefined, ctx: QuoteContext): { state: QuoteState; messages: PricingMessage[] } {
+  const messages: PricingMessage[] = [];
+  let state: QuoteState = { ...prev };
+
+  // A lapsed, unaccepted quotation is expired; an accepted one never lapses.
+  if (state.status === "quoted" && state.expiresAt && ctx.now >= state.expiresAt) state.status = "expired";
+
+  // Changing line items or currency invalidates an open cycle (#929 §6).
+  if (OPEN.has(state.status) && state.binding !== ctx.binding) {
+    messages.push(changed("Line items changed, so the quotation no longer applies."));
+    state = {};
+  }
+
+  if (!req) return { state, messages };
+
+  if (req.proposal && req.accepted_id) {
+    messages.push({ type: "error", code: "quote_unavailable", severity: "recoverable", path: "$.quote", content: "Send either a proposal or an accepted_id, not both." });
+    return { state, messages };
+  }
+
+  if (req.proposal) {
+    const proposal = req.proposal;
+    const decision = ctx.policy.evaluate({ proposal, currentSubtotal: ctx.currentSubtotal, accountId: ctx.accountId });
+    const base: QuoteState = { proposal, binding: ctx.binding };
+    if (decision.message) base.message = decision.message;
+    switch (decision.decision) {
+      case "quote":
+        state = { ...base, status: "quoted", id: newQuoteId(), subtotal: decision.subtotal, expiresAt: new Date(ctx.now.getTime() + ctx.quotationTtlMs) };
+        break;
+      case "accept": {
+        const id = newQuoteId();
+        state = { ...base, status: "accepted", id, subtotal: decision.subtotal };
+        break;
+      }
+      case "review":
+        state = { ...base, status: "pending" };
+        break;
+      case "decline":
+        state = { ...base, status: "declined" };
+        break;
+    }
+    return { state, messages };
+  }
+
+  if (req.accepted_id !== undefined) {
+    if (state.status === "accepted" && state.id === req.accepted_id) return { state, messages }; // repeat: no-op
+    if (state.status === "quoted" && state.id === req.accepted_id && state.binding === ctx.binding) {
+      state = { ...state, status: "accepted", acceptedId: req.accepted_id };
+      delete state.proposal;
+      return { state, messages };
+    }
+    messages.push(changed(`Quotation ${req.accepted_id} can't be accepted: it is unknown, superseded, expired or for different line items.`));
+  }
+  return { state, messages };
+}
+
+/** Business-side answer to a pending proposal (e.g. from a sales rep's review). */
+export function answerPending(prev: QuoteState, answer: { status: "quoted" | "declined"; subtotal?: number; message?: string }, now: Date, ttlMs: number): QuoteState {
+  if (prev.status !== "pending") throw new Error(`No pending proposal (status: ${prev.status ?? "idle"})`);
+  const next: QuoteState = { ...prev, status: answer.status };
+  if (answer.message) next.message = answer.message;
+  if (answer.status === "quoted") {
+    if (answer.subtotal === undefined) throw new Error("A quotation needs a subtotal");
+    next.id = newQuoteId();
+    next.subtotal = answer.subtotal;
+    next.expiresAt = new Date(now.getTime() + ttlMs);
+  }
+  return next;
+}
+
+/** The signed `quote` totals entry: quoted subtotal minus the line subtotals (#929 §5). */
+export function quoteAdjustment(state: QuoteState, linesSubtotal: number): number | undefined {
+  return state.status === "accepted" && state.subtotal !== undefined ? state.subtotal - linesSubtotal : undefined;
+}
+
+export function toUcpQuote(state: QuoteState): Record<string, unknown> {
+  if (!state.status) return {};
+  const out: Record<string, unknown> = { status: state.status };
+  if (state.id) out.id = state.id;
+  if (state.subtotal !== undefined) out.subtotal = state.subtotal;
+  if (state.expiresAt && state.status === "quoted") out.expires_at = state.expiresAt.toISOString();
+  if (state.message) out.message = state.message;
+  // proposal / accepted_id are echoed while the cycle they belong to is open.
+  if (state.proposal) out.proposal = state.proposal;
+  if (state.acceptedId) out.accepted_id = state.acceptedId;
+  return out;
+}
+
+function newQuoteId(): string {
+  return `qt_${randomUUID()}`;
+}
