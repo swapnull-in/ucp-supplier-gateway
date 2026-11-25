@@ -249,6 +249,33 @@ describe("Business-side flows: withdraw and out-of-band quotations", () => {
   });
 });
 
+describe("price falls after acceptance (raised on #929)", () => {
+  it("the cart never charges more than the current account price", async () => {
+    let unit = 4800;
+    const backend: CommerceBackend = {
+      searchProducts: async () => [],
+      getProducts: async (): Promise<CatalogProduct[]> => [{ id: "SG-220", title: "Gloves", description: "", categories: [], price: { amount: unit, currency: "USD" }, stock: { status: "in_stock" } }],
+    };
+    const local = makeApp(backend);
+    const req = (method: "POST" | "PUT" | "GET", url: string, payload?: object) =>
+      local.inject({ method, url, headers: ACME, ...(payload ? { payload } : {}) });
+
+    const cart = (await req("POST", "/ucp/carts", { line_items: lines(["SG-220", 10]), quote: { proposal: { subtotal: 47_000 } } })).json();
+    expect(cart.quote).toMatchObject({ status: "accepted", subtotal: 47_000 });
+    expect(totalOf(cart, "total")).toBe(47_000);
+
+    unit = 4500; // the account's price list drops
+    const after = (await req("GET", `/ucp/carts/${cart.id}`)).json();
+    expectValid(schemas.validateAbsolute(CART_WITH_QUOTE, after));
+    expect(after.quote).toMatchObject({ status: "accepted", subtotal: 45_000 });
+    expect(after.quote.id).not.toBe(cart.quote.id);
+    expect(totalOf(after, "quote")).toBe(0);
+    expect(totalOf(after, "total")).toBe(45_000);
+    expect(after.messages).toContainEqual(expect.objectContaining({ code: "quote_changed" }));
+    await local.close();
+  });
+});
+
 describe("idempotency on carts", () => {
   const body = JSON.stringify({ line_items: lines(["SG-220", 3]) });
   const post = (payload: string, key: string, headers = ACME) =>

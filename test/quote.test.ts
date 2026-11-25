@@ -166,3 +166,43 @@ describe("out-of-band quotations (accepted by id on a cart)", () => {
     }
   });
 });
+
+describe("a quotation never stands above the current price (raised on #929)", () => {
+  it("an accepted quotation is re-issued at the lower price under a new id when the price falls", () => {
+    const accepted = propose(98_000).state;
+    const { state, messages } = advanceQuote(accepted, undefined, ctx({ currentSubtotal: 95_000 }));
+    expect(state).toMatchObject({ status: "accepted", subtotal: 95_000 });
+    expect(state.id).not.toBe(accepted.id);
+    expect(state.acceptedId).toBeUndefined();
+    expect(quoteAdjustment(state, 95_000)).toBe(0);
+    expect(messages).toEqual([expect.objectContaining({ code: "quote_changed" })]);
+  });
+
+  it("a quoted quotation is re-issued too, keeping its expiry", () => {
+    const quoted = propose().state;
+    const { state } = advanceQuote(quoted, undefined, ctx({ currentSubtotal: 90_000 }));
+    expect(state).toMatchObject({ status: "quoted", subtotal: 90_000, expiresAt: quoted.expiresAt });
+    expect(state.id).not.toBe(quoted.id);
+  });
+
+  it("a price rise leaves the quotation alone: that's the hold doing its job", () => {
+    const accepted = propose(98_000).state;
+    const { state, messages } = advanceQuote(accepted, undefined, ctx({ currentSubtotal: 110_000 }));
+    expect(state).toEqual(accepted);
+    expect(messages).toEqual([]);
+    expect(quoteAdjustment(state, 110_000)).toBe(-12_000);
+  });
+
+  it("an out-of-band quotation above the current price is accepted at the current price", () => {
+    const external: ExternalQuote = { id: "qt_desk_hi", accountId: "acme", binding: "lines-A", subtotal: 104_000, expiresAt: new Date(T0.getTime() + DAY) };
+    const { state, messages } = advanceQuote({}, { accepted_id: "qt_desk_hi" }, ctx({ resolveExternal: () => external }));
+    expect(state).toMatchObject({ status: "accepted", subtotal: 100_000 });
+    expect(state.id).not.toBe("qt_desk_hi");
+    expect(messages[0]).toMatchObject({ code: "quote_changed" });
+  });
+
+  it("pending and declined proposals are unaffected", () => {
+    expect(advanceQuote(propose(92_000).state, undefined, ctx({ currentSubtotal: 50_000 })).state.status).toBe("pending");
+    expect(advanceQuote(propose(10_000).state, undefined, ctx({ currentSubtotal: 5_000 })).state.status).toBe("declined");
+  });
+});

@@ -50,7 +50,7 @@ describe("conformance runner against the reference gateway", () => {
     for (const id of ["DISCOVERY", "Q-IDLE", "Q-QUOTED", "Q-ACCEPT", "Q-REPEAT", "Q-IMMUT", "Q-INVAL", "Q-REUSE", "Q-STALE", "Q-BOTH", "Q-WITHDRAW", "Q-OOB", "SCHEMA"]) {
       expect(r[id]?.outcome, `${id}: ${r[id]?.detail}`).toBe("pass");
     }
-    expect(results.filter((x) => x.outcome === "n/a")).toHaveLength(8);
+    expect(results.filter((x) => x.outcome === "n/a")).toHaveLength(9);
   });
 
   it("skips Business-side vectors without hooks instead of passing them", async () => {

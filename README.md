@@ -49,7 +49,7 @@ Requires Node.js 22+ and pnpm.
 
 ```bash
 pnpm install
-pnpm test          # 84 tests, including schema conformance and a real MCP client
+pnpm test          # 90 tests, including schema conformance and a real MCP client
 pnpm start         # mock SAP OCC on :9002, gateway on :8080
 ```
 
@@ -94,6 +94,7 @@ token as an `Authorization: Bearer` header, and include UCP metadata in every ca
 | `{ "accepted_id": "qt_…" }` for a quotation issued **outside the cart** | Accept if it's for this account, the same items and quantities (any order), and unexpired | `accepted`, or `quote_changed` |
 | Line items or quantities change | — | Quotation invalidated, `quote_changed` warning |
 | *(Business withdraws a `quoted` or `accepted` quotation)* | — | `withdrawn`, id and subtotal kept, price removed, `quote_changed` reported once |
+| *(The account price for the same lines falls below a quotation)* | — | Re-issued at the lower price under a new id, `quote_changed` |
 
 The policy is a pluggable interface (`QuotePolicy`), so rules, a model or a sales desk can decide.
 `new ThresholdQuotePolicy(0.03, 0.1, false)` answers `{}` with `quote_unavailable` instead of a
@@ -129,7 +130,7 @@ pnpm conformance --origin https://business.example --token <buyer access token> 
 
 Vectors that can't be observed from outside (expiry over time, currency or unit changes, Checkout
 and Order projection, Platform behaviour) are reported **N/A with the reason**, never as passes.
-It exits non-zero on any failure, so it can gate CI. Against this gateway: 13 passed, 0 failed, 8 not observable.
+It exits non-zero on any failure, so it can gate CI. Against this gateway: 13 passed, 0 failed, 9 not observable.
 The runner is tested against deliberately broken Businesses (silent invalidation, duplicate totals
 entries, a missing capability) to make sure it fails them.
 
@@ -175,12 +176,12 @@ passes UCP authority binding.
 - **No checkout, orders or payments.** Carts and quotes only.
 - **The quote extension follows a draft** (#929 / PR #930) and will change with it. It is served
   under the gateway's own namespace until `dev.ucp.common.quote` is released.
-- **An accepted quotation is held even if the buyer's price later falls.** The `quote` totals
-  entry is `quote.subtotal` minus the current line subtotals, so when the account price drops
-  below the quoted subtotal, the entry turns positive and the buyer pays more than today's price.
-  The draft spec doesn't say what should happen here; it's raised on
-  [#929](https://github.com/Universal-Commerce-Protocol/ucp/issues/929#issuecomment-7138134081),
-  and the gateway will follow whatever is agreed.
+- **Price falls under a quotation: our own rule, pending the spec.** If the account price for the
+  same lines falls below a `quoted` or `accepted` quotation, the gateway re-issues it at the lower
+  price under a new id (a subtotal never changes for an id) and reports `quote_changed`, so the
+  buyer never pays more than today's price. A rise leaves the quotation alone. The draft spec
+  doesn't settle this yet; see the discussion on
+  [#929](https://github.com/Universal-Commerce-Protocol/ucp/issues/929#issuecomment-7138134081).
 
 ## Open design questions
 

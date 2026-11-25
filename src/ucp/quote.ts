@@ -101,11 +101,39 @@ const OPEN: ReadonlySet<QuoteStatus | undefined> = new Set(["pending", "quoted",
 const changed = (content: string): PricingMessage => ({ type: "warning", code: "quote_changed", content, path: "$.quote" });
 
 /**
- * Applies time, line-item changes and a Buyer request to the quote state, in that order.
+ * Applies time, line-item changes and a Buyer request to the quote state, in that order, then
+ * never lets a quotation stand above the current price (see `repriceDown`).
  * Returns the next state and any messages for the response. Never throws for Buyer mistakes:
  * those become `quote_unavailable` or `quote_changed` messages, as #929 specifies.
  */
 export function advanceQuote(prev: QuoteState, req: QuoteRequest | undefined, ctx: QuoteContext): { state: QuoteState; messages: PricingMessage[] } {
+  const result = applyRequest(prev, req, ctx);
+  return repriceDown(result, ctx);
+}
+
+/**
+ * A quotation the Buyer holds must never cost more than the Business's current price for the same
+ * lines: holding a price that rose is the point of a quotation, holding one that fell works
+ * against the Buyer, and buyer agents measurably accept such quotes (#929, comments 7138134081
+ * and 7140972277). So a `quoted` or `accepted` quotation above the current subtotal is re-issued
+ * at the current subtotal under a new id (a subtotal never changes for an id, §6), keeping its
+ * status and expiry, and `quote_changed` is reported. The spec doesn't settle this yet.
+ */
+function repriceDown(result: { state: QuoteState; messages: PricingMessage[] }, ctx: QuoteContext) {
+  const { state, messages } = result;
+  const holding = state.status === "quoted" || state.status === "accepted";
+  if (!holding || state.subtotal === undefined || state.binding !== ctx.binding || state.subtotal <= ctx.currentSubtotal) return result;
+  const next: QuoteState = { ...state, id: newQuoteId(), subtotal: ctx.currentSubtotal };
+  // The Buyer accepted the old id, not this one: an `accepted` status without `accepted_id`
+  // reads as the Business accepting on the Buyer's behalf (#929 §1), here at a lower price.
+  delete next.acceptedId;
+  return {
+    state: next,
+    messages: [...messages, changed(`The current price for these line items fell below quotation ${state.id}, so it was re-issued at the lower price as ${next.id}.`)],
+  };
+}
+
+function applyRequest(prev: QuoteState, req: QuoteRequest | undefined, ctx: QuoteContext): { state: QuoteState; messages: PricingMessage[] } {
   const messages: PricingMessage[] = [];
   let state: QuoteState = { ...prev };
 

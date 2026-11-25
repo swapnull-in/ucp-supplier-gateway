@@ -54,6 +54,7 @@ const NOT_OBSERVABLE: [string, string, string, string][] = [
   ["Q-ORDER", "The Order carries only {id, subtotal}", "§9", "needs Checkout and Order"],
   ["Q-DONE", "Completion while quoted or pending closes the cycle without an Order quote", "§8", "needs Checkout"],
   ["Q-UNK", "An unrecognized status is shown without an accept affordance", "§2", "Platform behaviour, not Business"],
+  ["Q-PRICE", "A quotation never stands above the current price for the same lines", "proposed in #929 thread", "needs the Business's price to change; not yet in the spec"],
 ];
 
 export async function runConformance(cfg: ConformanceConfig): Promise<VectorResult[]> {
