@@ -49,7 +49,7 @@ Requires Node.js 22+ and pnpm.
 
 ```bash
 pnpm install
-pnpm test          # 79 tests, including schema conformance and a real MCP client
+pnpm test          # 84 tests, including schema conformance and a real MCP client
 pnpm start         # mock SAP OCC on :9002, gateway on :8080
 ```
 
@@ -106,6 +106,33 @@ With `ADMIN_TOKEN` set, two routes stand in for a sales desk:
 | `POST /admin/carts/:id/quote` | `{"status":"quoted","subtotal":…}` or `{"status":"declined"}` answers a pending proposal; `{"status":"withdrawn"}` revokes a quotation |
 | `POST /admin/quotes` | Issues a quotation outside any cart: `{"account_id","currency","subtotal","line_items"}`; the Buyer accepts it on a cart by id |
 
+## Conformance runner for the quote extension (#929)
+
+A black-box checker for **any** UCP Business that advertises the #929 quote extension on Cart.
+It discovers the Business through `/.well-known/ucp`, runs the extension's lifecycle over REST,
+and reports each vector against the #929 section it checks:
+
+```bash
+pnpm conformance --origin https://business.example --token <buyer access token> \
+  --item SKU-1:10 --item SKU-2:20          # orderable test items; the second enables extra-line checks
+  [--proposal 12345]                       # if the Business answers {} with quote_unavailable
+  [--admin-token … --account-id …]         # this gateway's admin routes, for withdraw and out-of-band vectors
+  [--json]
+```
+
+| Vectors | What they check |
+|---|---|
+| `DISCOVERY`, `SCHEMA` | Cart and the extension are advertised; every cart response validates against the #930 draft schema |
+| `Q-IDLE`, `Q-QUOTED`, `Q-ACCEPT`, `Q-REPEAT`, `Q-IMMUT` | Idle `{}`; quotation shape; accept by id with exactly one signed `quote` totals entry; repeat is a no-op; ids are immutable |
+| `Q-INVAL`, `Q-REUSE`, `Q-STALE`, `Q-BOTH` | Quantity changes invalidate; invalidated or unknown ids fail closed with `quote_changed`; proposal plus `accepted_id` gets `quote_unavailable` |
+| `Q-WITHDRAW`, `Q-OOB` | Withdrawal keeps id and subtotal; out-of-band quotations bind by items, quantities and currency (needs Business hooks) |
+
+Vectors that can't be observed from outside (expiry over time, currency or unit changes, Checkout
+and Order projection, Platform behaviour) are reported **N/A with the reason**, never as passes.
+It exits non-zero on any failure, so it can gate CI. Against this gateway: 13 passed, 0 failed, 8 not observable.
+The runner is tested against deliberately broken Businesses (silent invalidation, duplicate totals
+entries, a missing capability) to make sure it fails them.
+
 ## Architecture
 
 ```
@@ -130,6 +157,7 @@ With `ADMIN_TOKEN` set, two routes stand in for a sales desk:
 | `src/ucp/` | Profile, catalog and cart routes, quote state machine, schemas |
 | `src/mcp.ts` | UCP MCP binding (official MCP TypeScript SDK) |
 | `src/idempotency.ts` | UCP replay protection |
+| `conformance/` | Black-box conformance runner for the #929 quote extension |
 | `vendor/` | Official UCP schemas (Apache-2.0) and the draft quote schema |
 
 Run against a real OCC system by setting `OCC_BASE_URL` and `OCC_SITE_ID`. In production,
