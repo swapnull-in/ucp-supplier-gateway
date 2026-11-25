@@ -94,7 +94,7 @@ token as an `Authorization: Bearer` header, and include UCP metadata in every ca
 | `{ "accepted_id": "qt_…" }` for a quotation issued **outside the cart** | Accept if it's for this account, the same items and quantities (any order), and unexpired | `accepted`, or `quote_changed` |
 | Line items or quantities change | — | Quotation invalidated, `quote_changed` warning |
 | *(Business withdraws a `quoted` or `accepted` quotation)* | — | `withdrawn`, id and subtotal kept, price removed, `quote_changed` reported once |
-| *(The account price for the same lines falls below a quotation)* | — | Re-issued at the lower price under a new id, `quote_changed` |
+| *(The account price for the same lines falls below a quotation and its list price at issue)* | — | Re-issued as `quoted` at the lower price under a new id, `quote_changed`; the Buyer accepts the new id |
 
 The policy is a pluggable interface (`QuotePolicy`), so rules, a model or a sales desk can decide.
 `new ThresholdQuotePolicy(0.03, 0.1, false)` answers `{}` with `quote_unavailable` instead of a
@@ -122,7 +122,7 @@ npx ucp-quote-conformance --origin https://business.example --token <buyer acces
 or in CI, as a GitHub Action:
 
 ```yaml
-- uses: swapnull-in/ucp-supplier-gateway@v0.1.0
+- uses: swapnull-in/ucp-supplier-gateway@v0.1.1
   with:
     origin: https://business.example
     token: ${{ secrets.UCP_TEST_BUYER_TOKEN }}
@@ -195,11 +195,14 @@ passes UCP authority binding.
 - **The quote extension follows a draft** (#929 / PR #930) and will change with it. It is served
   under the gateway's own namespace until `dev.ucp.common.quote` is released.
 - **Price falls under a quotation: our own rule, pending the spec.** If the account price for the
-  same lines falls below a `quoted` or `accepted` quotation, the gateway re-issues it at the lower
-  price under a new id (a subtotal never changes for an id) and reports `quote_changed`, so the
-  buyer never pays more than today's price. A rise leaves the quotation alone. The draft spec
-  doesn't settle this yet; see the discussion on
-  [#929](https://github.com/Universal-Commerce-Protocol/ucp/issues/929#issuecomment-7138134081).
+  same lines falls below both a `quoted` or `accepted` quotation and the list price when it was
+  issued, the gateway re-issues it at the lower price under a new id (a subtotal never changes for
+  an id) and reports `quote_changed`, so the buyer never pays more than today's price. The new
+  quotation is `quoted`, even if the old one was accepted: accepting is the Buyer's act, so the
+  Buyer accepts the new id. A rise leaves the quotation alone, and so does a quotation set above
+  list on purpose, until the price falls below list. The draft spec doesn't settle this yet; see
+  the discussion on
+  [#929](https://github.com/Universal-Commerce-Protocol/ucp/issues/929#issuecomment-7151328635).
 
 ## Open design questions
 

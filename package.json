@@ -1,6 +1,6 @@
 {
   "name": "ucp-supplier-gateway",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "description": "Reference UCP and MCP supplier endpoint for B2B commerce backends (SAP Commerce OCC): account pricing, carts and quotes for AI agents.",
   "license": "Apache-2.0",

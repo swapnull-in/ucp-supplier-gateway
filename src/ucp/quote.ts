@@ -23,6 +23,8 @@ export interface QuoteState {
   acceptedId?: string;
   /** Line items and currency the quotation (or pending proposal) was made for. */
   binding?: string;
+  /** The current subtotal for the bound lines when the quotation was issued (see `repriceDown`). */
+  listSubtotal?: number;
   /** A change the Buyer didn't ask for (e.g. a withdrawal), reported once as `quote_changed`. */
   notice?: string;
 }
@@ -113,23 +115,30 @@ export function advanceQuote(prev: QuoteState, req: QuoteRequest | undefined, ct
 
 /**
  * A quotation the Buyer holds must never cost more than the Business's current price for the same
- * lines: holding a price that rose is the point of a quotation, holding one that fell works
- * against the Buyer, and buyer agents measurably accept such quotes (#929, comments 7138134081
- * and 7140972277). So a `quoted` or `accepted` quotation above the current subtotal is re-issued
- * at the current subtotal under a new id (a subtotal never changes for an id, §6), keeping its
- * status and expiry, and `quote_changed` is reported. The spec doesn't settle this yet.
+ * lines once that price falls: holding a price that rose is the point of a quotation, holding one
+ * that fell works against the Buyer, and buyer agents measurably accept such quotes (#929,
+ * comments 7138134081, 7140972277 and 7151328635). So when the current subtotal is below both the
+ * quoted subtotal and the list subtotal at issue, the quotation is re-issued at the current
+ * subtotal under a new id (a subtotal never changes for an id, §6) and `quote_changed` is reported.
+ * The second condition keeps a quotation set above list on purpose until the price actually falls.
+ * A re-issued quotation is always `quoted`, even if the old one was accepted: accepting is the
+ * Buyer's act (§1), so the Buyer accepts the new id. The spec doesn't settle this yet.
  */
 function repriceDown(result: { state: QuoteState; messages: PricingMessage[] }, ctx: QuoteContext) {
   const { state, messages } = result;
   const holding = state.status === "quoted" || state.status === "accepted";
-  if (!holding || state.subtotal === undefined || state.binding !== ctx.binding || state.subtotal <= ctx.currentSubtotal) return result;
-  const next: QuoteState = { ...state, id: newQuoteId(), subtotal: ctx.currentSubtotal };
-  // The Buyer accepted the old id, not this one: an `accepted` status without `accepted_id`
-  // reads as the Business accepting on the Buyer's behalf (#929 §1), here at a lower price.
+  if (!holding || state.subtotal === undefined || state.binding !== ctx.binding) return result;
+  // Quotations answered or issued without pricing the lines take the first price seen as list.
+  const listSubtotal = state.listSubtotal ?? ctx.currentSubtotal;
+  if (ctx.currentSubtotal >= Math.min(state.subtotal, listSubtotal)) return { state: { ...state, listSubtotal }, messages };
+  const expiresAt = state.status === "quoted" && state.expiresAt ? state.expiresAt : new Date(ctx.now.getTime() + ctx.quotationTtlMs);
+  const next: QuoteState = { ...state, status: "quoted", id: newQuoteId(), subtotal: ctx.currentSubtotal, listSubtotal: ctx.currentSubtotal, expiresAt };
+  // The old message and acceptance belonged to the old quotation.
   delete next.acceptedId;
+  delete next.message;
   return {
     state: next,
-    messages: [...messages, changed(`The current price for these line items fell below quotation ${state.id}, so it was re-issued at the lower price as ${next.id}.`)],
+    messages: [...messages, changed(`The current price for these line items fell below quotation ${state.id}, so it was re-issued at the lower price as ${next.id}; accept the new id to apply it.`)],
   };
 }
 
@@ -165,11 +174,11 @@ function applyRequest(prev: QuoteState, req: QuoteRequest | undefined, ctx: Quot
     if (decision.message) base.message = decision.message;
     switch (decision.decision) {
       case "quote":
-        state = { ...base, status: "quoted", id: newQuoteId(), subtotal: decision.subtotal, expiresAt: new Date(ctx.now.getTime() + ctx.quotationTtlMs) };
+        state = { ...base, status: "quoted", id: newQuoteId(), subtotal: decision.subtotal, listSubtotal: ctx.currentSubtotal, expiresAt: new Date(ctx.now.getTime() + ctx.quotationTtlMs) };
         break;
       case "accept": {
         const id = newQuoteId();
-        state = { ...base, status: "accepted", id, subtotal: decision.subtotal };
+        state = { ...base, status: "accepted", id, subtotal: decision.subtotal, listSubtotal: ctx.currentSubtotal };
         break;
       }
       case "review":

@@ -68,7 +68,7 @@ function inputSchema(route: ToolRoute) {
 /** Statuses that are protocol errors under UCP's two-layer model; everything else is a result. */
 const PROTOCOL_ERROR_STATUSES = new Set([400, 401, 403, 409, 413, 429]);
 
-export function registerMcp(app: FastifyInstance, path: string, restBase: string, serverInfo = { name: "ucp-supplier-gateway", version: "0.1.0" }) {
+export function registerMcp(app: FastifyInstance, path: string, restBase: string, serverInfo = { name: "ucp-supplier-gateway", version: "0.1.1" }) {
   app.post(path, async (req, reply) => {
     const authorization = req.headers.authorization;
     const headerKey = req.headers["idempotency-key"];

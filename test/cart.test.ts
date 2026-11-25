@@ -267,11 +267,20 @@ describe("price falls after acceptance (raised on #929)", () => {
     unit = 4500; // the account's price list drops
     const after = (await req("GET", `/ucp/carts/${cart.id}`)).json();
     expectValid(schemas.validateAbsolute(CART_WITH_QUOTE, after));
-    expect(after.quote).toMatchObject({ status: "accepted", subtotal: 45_000 });
+    expect(after.quote).toMatchObject({ status: "quoted", subtotal: 45_000 });
     expect(after.quote.id).not.toBe(cart.quote.id);
-    expect(totalOf(after, "quote")).toBe(0);
+    expect(after.totals.some((t: { type: string }) => t.type === "quote")).toBe(false);
     expect(totalOf(after, "total")).toBe(45_000);
     expect(after.messages).toContainEqual(expect.objectContaining({ code: "quote_changed" }));
+
+    // The old id no longer resolves; the new one is accepted only when the Buyer sends it.
+    const stale = (await req("PUT", `/ucp/carts/${cart.id}`, { line_items: lines(["SG-220", 10]), quote: { accepted_id: cart.quote.id } })).json();
+    expect(stale.quote).toMatchObject({ status: "quoted", id: after.quote.id });
+    expect(stale.messages).toContainEqual(expect.objectContaining({ code: "quote_changed" }));
+    const accepted = (await req("PUT", `/ucp/carts/${cart.id}`, { line_items: lines(["SG-220", 10]), quote: { accepted_id: after.quote.id } })).json();
+    expectValid(schemas.validateAbsolute(CART_WITH_QUOTE, accepted));
+    expect(accepted.quote).toMatchObject({ status: "accepted", id: after.quote.id, accepted_id: after.quote.id });
+    expect(totalOf(accepted, "total")).toBe(45_000);
     await local.close();
   });
 });

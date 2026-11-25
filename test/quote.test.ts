@@ -167,15 +167,23 @@ describe("out-of-band quotations (accepted by id on a cart)", () => {
   });
 });
 
-describe("a quotation never stands above the current price (raised on #929)", () => {
-  it("an accepted quotation is re-issued at the lower price under a new id when the price falls", () => {
+describe("a quotation never stands above a fallen price (raised on #929)", () => {
+  it("an accepted quotation is re-issued as quoted at the lower price under a new id", () => {
     const accepted = propose(98_000).state;
     const { state, messages } = advanceQuote(accepted, undefined, ctx({ currentSubtotal: 95_000 }));
-    expect(state).toMatchObject({ status: "accepted", subtotal: 95_000 });
+    expect(state).toMatchObject({ status: "quoted", subtotal: 95_000 });
     expect(state.id).not.toBe(accepted.id);
     expect(state.acceptedId).toBeUndefined();
-    expect(quoteAdjustment(state, 95_000)).toBe(0);
+    expect(state.expiresAt!.getTime()).toBe(T0.getTime() + 7 * DAY);
+    expect(quoteAdjustment(state, 95_000)).toBeUndefined();
     expect(messages).toEqual([expect.objectContaining({ code: "quote_changed" })]);
+  });
+
+  it("the Buyer accepts the re-issued id explicitly", () => {
+    const reissued = advanceQuote(propose(98_000).state, undefined, ctx({ currentSubtotal: 95_000 })).state;
+    const { state, messages } = advanceQuote(reissued, { accepted_id: reissued.id! }, ctx({ currentSubtotal: 95_000 }));
+    expect(state).toMatchObject({ status: "accepted", id: reissued.id, acceptedId: reissued.id, subtotal: 95_000 });
+    expect(messages).toEqual([]);
   });
 
   it("a quoted quotation is re-issued too, keeping its expiry", () => {
@@ -193,12 +201,16 @@ describe("a quotation never stands above the current price (raised on #929)", ()
     expect(quoteAdjustment(state, 110_000)).toBe(-12_000);
   });
 
-  it("an out-of-band quotation above the current price is accepted at the current price", () => {
+  it("a quotation set above list on purpose stands until the price falls below list", () => {
     const external: ExternalQuote = { id: "qt_desk_hi", accountId: "acme", binding: "lines-A", subtotal: 104_000, expiresAt: new Date(T0.getTime() + DAY) };
-    const { state, messages } = advanceQuote({}, { accepted_id: "qt_desk_hi" }, ctx({ resolveExternal: () => external }));
-    expect(state).toMatchObject({ status: "accepted", subtotal: 100_000 });
-    expect(state.id).not.toBe("qt_desk_hi");
-    expect(messages[0]).toMatchObject({ code: "quote_changed" });
+    const held = advanceQuote({}, { accepted_id: "qt_desk_hi" }, ctx({ resolveExternal: () => external }));
+    expect(held.state).toMatchObject({ status: "accepted", id: "qt_desk_hi", subtotal: 104_000, listSubtotal: 100_000 });
+    expect(held.messages).toEqual([]);
+    expect(advanceQuote(held.state, undefined, ctx({ currentSubtotal: 102_000 })).state).toEqual(held.state);
+
+    const fell = advanceQuote(held.state, undefined, ctx({ currentSubtotal: 97_000 }));
+    expect(fell.state).toMatchObject({ status: "quoted", subtotal: 97_000 });
+    expect(fell.messages[0]).toMatchObject({ code: "quote_changed" });
   });
 
   it("pending and declined proposals are unaffected", () => {
