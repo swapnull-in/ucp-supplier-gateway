@@ -17,13 +17,12 @@ export class UcpSchemas {
   readonly #ajv: Ajv2020;
   readonly #cache = new Map<string, ValidateFunction>();
 
-  constructor() {
+  /** `schemas` replaces reading the vendored files, e.g. when they're bundled into one file. */
+  constructor(schemas: readonly object[] = loadVendoredSchemas()) {
     // UCP schemas carry their own annotation keywords (ucp_request, ...), so strict mode is off.
     this.#ajv = new Ajv2020({ strict: false, allErrors: true });
     addFormats.default(this.#ajv);
-    for (const file of listJson(SCHEMA_ROOT)) {
-      this.#ajv.addSchema(JSON.parse(readFileSync(file, "utf8")));
-    }
+    for (const schema of schemas) this.#ajv.addSchema(schema);
   }
 
   /** Registers an additional schema (e.g. a vendor capability) that may $ref UCP schemas. */
@@ -46,6 +45,11 @@ export class UcpSchemas {
     if (fn(data)) return { valid: true };
     return { valid: false, errors: (fn.errors ?? []).map((e) => `${e.instancePath || "/"} ${e.message ?? ""}`.trim()) };
   }
+}
+
+/** The released UCP schemas vendored in this repo, parsed. */
+export function loadVendoredSchemas(): object[] {
+  return listJson(SCHEMA_ROOT).map((file) => JSON.parse(readFileSync(file, "utf8")) as object);
 }
 
 function listJson(dir: string): string[] {

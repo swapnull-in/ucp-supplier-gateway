@@ -1,0 +1,51 @@
+name: UCP quote conformance
+description: Check a UCP Business against the quote extension proposed in UCP #929 (draft schema PR #930).
+author: swapnull-in
+branding:
+  icon: check-circle
+  color: blue
+inputs:
+  origin:
+    description: Origin of the UCP Business (its /.well-known/ucp is read)
+    required: true
+  token:
+    description: Identity-linked access token for a test buyer account (pass it from a secret)
+    required: true
+  items:
+    description: Orderable test items as space-separated SKU:QTY pairs, e.g. "SKU-1:10 SKU-2:20"
+    required: true
+  proposal:
+    description: Subtotal to propose if the Business answers {} with quote_unavailable
+    required: false
+  admin-token:
+    description: Business hook token (ucp-supplier-gateway admin routes) for withdraw and out-of-band vectors
+    required: false
+  account-id:
+    description: Buyer account id behind the token, used with admin-token
+    required: false
+  json:
+    description: Print machine-readable results ("true" or "false")
+    required: false
+    default: "false"
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        UCPC_ORIGIN: ${{ inputs.origin }}
+        UCPC_TOKEN: ${{ inputs.token }}
+        UCPC_ITEMS: ${{ inputs.items }}
+        UCPC_PROPOSAL: ${{ inputs.proposal }}
+        UCPC_ADMIN_TOKEN: ${{ inputs.admin-token }}
+        UCPC_ACCOUNT_ID: ${{ inputs.account-id }}
+        UCPC_JSON: ${{ inputs.json }}
+        UCPC_CLI: ${{ github.action_path }}/conformance/package/dist/cli.js
+      # Inputs arrive as environment variables, never interpolated into the script.
+      run: |
+        set -euo pipefail
+        args=(--origin "$UCPC_ORIGIN" --token "$UCPC_TOKEN")
+        for item in $UCPC_ITEMS; do args+=(--item "$item"); done
+        if [ -n "$UCPC_PROPOSAL" ]; then args+=(--proposal "$UCPC_PROPOSAL"); fi
+        if [ -n "$UCPC_ADMIN_TOKEN" ] && [ -n "$UCPC_ACCOUNT_ID" ]; then args+=(--admin-token "$UCPC_ADMIN_TOKEN" --account-id "$UCPC_ACCOUNT_ID"); fi
+        if [ "$UCPC_JSON" = "true" ]; then args+=(--json); fi
+        node "$UCPC_CLI" "${args[@]}"

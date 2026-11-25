@@ -37,6 +37,8 @@ export interface ConformanceConfig {
   proposalSubtotal?: number;
   hooks?: BusinessHooks;
   fetch?: typeof fetch;
+  /** Pre-loaded schemas (the bundled CLI ships them inline); defaults to the vendored files. */
+  schemas?: { released: readonly object[]; draftQuote: { $id: string } };
 }
 
 type Json = Record<string, any>;
@@ -75,8 +77,8 @@ export async function runConformance(cfg: ConformanceConfig): Promise<VectorResu
   }
   record("DISCOVERY", "Business advertises Cart and the quote extension", "§10", "pass", `${quoteCap} at ${rest.endpoint}`);
 
-  const schemas = new UcpSchemas();
-  schemas.addSchema(loadDraftQuoteSchema());
+  const schemas = cfg.schemas ? new UcpSchemas(cfg.schemas.released) : new UcpSchemas();
+  schemas.addSchema(cfg.schemas?.draftQuote ?? loadDraftQuoteSchema());
   const schemaErrors: string[] = [];
   let cartResponses = 0;
 

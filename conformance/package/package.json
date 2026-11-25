@@ -1,0 +1,13 @@
+{
+  "name": "ucp-quote-conformance",
+  "version": "0.1.0",
+  "description": "Black-box conformance checks for the UCP quote extension (#929) against any UCP Business.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "bin": { "ucp-quote-conformance": "dist/cli.js" },
+  "files": ["dist", "LICENSE", "NOTICE", "README.md"],
+  "engines": { "node": ">=20" },
+  "repository": { "type": "git", "url": "git+https://github.com/swapnull-in/ucp-supplier-gateway.git", "directory": "conformance/package" },
+  "homepage": "https://github.com/swapnull-in/ucp-supplier-gateway#conformance-runner-for-the-quote-extension-929",
+  "keywords": ["ucp", "universal-commerce-protocol", "conformance", "agentic-commerce", "quote", "b2b"]
+}

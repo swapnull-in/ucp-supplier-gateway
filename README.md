@@ -49,7 +49,7 @@ Requires Node.js 22+ and pnpm.
 
 ```bash
 pnpm install
-pnpm test          # 90 tests, including schema conformance and a real MCP client
+pnpm test          # 92 tests, including schema conformance and a real MCP client
 pnpm start         # mock SAP OCC on :9002, gateway on :8080
 ```
 
@@ -113,6 +113,24 @@ A black-box checker for **any** UCP Business that advertises the #929 quote exte
 It discovers the Business through `/.well-known/ucp`, runs the extension's lifecycle over REST,
 and reports each vector against the #929 section it checks:
 
+Run it without cloning anything, as a single dependency-free file:
+
+```bash
+npx ucp-quote-conformance --origin https://business.example --token <buyer access token> --item SKU-1:10
+```
+
+or in CI, as a GitHub Action:
+
+```yaml
+- uses: swapnull-in/ucp-supplier-gateway@v0.1.0
+  with:
+    origin: https://business.example
+    token: ${{ secrets.UCP_TEST_BUYER_TOKEN }}
+    items: SKU-1:10 SKU-2:20
+```
+
+From a checkout of this repo:
+
 ```bash
 pnpm conformance --origin https://business.example --token <buyer access token> \
   --item SKU-1:10 --item SKU-2:20          # orderable test items; the second enables extra-line checks
@@ -158,7 +176,7 @@ entries, a missing capability) to make sure it fails them.
 | `src/ucp/` | Profile, catalog and cart routes, quote state machine, schemas |
 | `src/mcp.ts` | UCP MCP binding (official MCP TypeScript SDK) |
 | `src/idempotency.ts` | UCP replay protection |
-| `conformance/` | Black-box conformance runner for the #929 quote extension |
+| `conformance/` | Black-box conformance runner for the #929 quote extension; `package/` is the published single-file CLI |
 | `vendor/` | Official UCP schemas (Apache-2.0) and the draft quote schema |
 
 Run against a real OCC system by setting `OCC_BASE_URL` and `OCC_SITE_ID`. In production,

@@ -17,4 +17,31 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm typecheck
+      - run: pnpm build:conformance
+      # The bundle is committed for the GitHub Action; it must match the sources.
+      - run: git diff --exit-code -- conformance/package/dist
       - run: pnpm test
+
+  # Dogfoods the GitHub Action (uses: ./) against the reference gateway started in the job.
+  action:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Start the reference gateway
+        run: |
+          PORT=8080 ADMIN_TOKEN=ci-admin PUBLIC_ORIGIN=http://127.0.0.1:8080 pnpm start > gateway.log 2>&1 &
+          for i in $(seq 1 60); do curl -sf http://127.0.0.1:8080/.well-known/ucp > /dev/null && exit 0; sleep 1; done
+          cat gateway.log; exit 1
+      - uses: ./
+        with:
+          origin: http://127.0.0.1:8080
+          token: demo-token-acme
+          items: SG-220:10 HX-1040:20
+          admin-token: ci-admin
+          account-id: acme_industrial

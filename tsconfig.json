@@ -11,5 +11,6 @@
     "skipLibCheck": true,
     "noEmit": true
   },
-  "include": ["src", "test", "conformance"]
+  "include": ["src", "test", "conformance", "scripts"],
+  "exclude": ["conformance/package"]
 }
