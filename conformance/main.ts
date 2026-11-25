@@ -2,9 +2,10 @@ import { parseArgs } from "node:util";
 import { type ConformanceConfig, formatReport, gatewayAdminHooks, runConformance } from "./runner.js";
 
 export const USAGE = `Usage: ucp-quote-conformance --origin <https://business.example> --token <buyer access token> --item SKU:QTY [--item SKU:QTY]
-       [--proposal <subtotal>] [--admin-token <token> --account-id <id>] [--agent-profile <url>] [--json]
+       [--proposal <subtotal>] [--admin-token <token> --account-id <id>] [--place-orders] [--agent-profile <url>] [--json]
 
-Checks a UCP Business against the quote extension proposed in UCP #929 (draft schema: PR #930).`;
+Checks a UCP Business against the quote extension proposed in UCP #929 (draft schema: PR #930).
+--place-orders completes test checkouts to check the Order: it places real orders on the Business.`;
 
 /** Runs the CLI; returns the process exit code (0 all pass, 1 a vector failed, 2 bad usage). */
 export async function main(argv: string[], schemas?: ConformanceConfig["schemas"]): Promise<number> {
@@ -18,6 +19,7 @@ export async function main(argv: string[], schemas?: ConformanceConfig["schemas"
       "agent-profile": { type: "string", default: "https://conformance.invalid/platform-profile.json" },
       "admin-token": { type: "string" },
       "account-id": { type: "string" },
+      "place-orders": { type: "boolean", default: false },
       json: { type: "boolean", default: false },
       help: { type: "boolean", default: false },
     },
@@ -46,6 +48,7 @@ export async function main(argv: string[], schemas?: ConformanceConfig["schemas"
     items,
     ...(values.proposal ? { proposalSubtotal: Number(values.proposal) } : {}),
     ...(values["admin-token"] && values["account-id"] ? { hooks: gatewayAdminHooks(values.origin, values["admin-token"], values["account-id"]) } : {}),
+    ...(values["place-orders"] ? { placeOrders: true } : {}),
     ...(schemas ? { schemas } : {}),
   });
   console.log(values.json ? JSON.stringify(results, null, 2) : formatReport(results));

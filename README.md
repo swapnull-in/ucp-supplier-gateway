@@ -29,7 +29,10 @@ that looks like against a legacy ERP-backed storefront.
 | `dev.ucp.shopping.catalog.search` | `POST /ucp/catalog/search` | `search_catalog` | Account pricing with identity linking |
 | `dev.ucp.shopping.catalog.lookup` | `POST /ucp/catalog/lookup` | `lookup_catalog` | Batch lookup with `inputs` correlation and `not_found` messages |
 | `dev.ucp.shopping.cart` | `POST/GET/PUT /ucp/carts…`, `POST …/cancel` | `create_cart`, `get_cart`, `update_cart`, `cancel_cart` | Contract and volume pricing, MOQ and stock messages, expiry |
-| Quote extension ([#929](https://github.com/Universal-Commerce-Protocol/ucp/issues/929), draft) | `quote` on the cart | same tools | Firm quotes, price proposals, pending review, accept by id, invalidation |
+| `dev.ucp.shopping.checkout` | `POST/GET/PUT /ucp/checkout-sessions…`, `POST …/complete`, `POST …/cancel` | `create_checkout`, `get_checkout`, `update_checkout`, `complete_checkout`, `cancel_checkout` | From a cart via `cart_id` (one open checkout per cart, changes reflected back) or from line items |
+| `dev.ucp.shopping.order` | `GET /ucp/orders/:id` | `get_order` | Placed on complete; carries the accepted quotation and payment term |
+| `dev.ucp.common.payment.terms` | `payment` on checkout and order | same tools | Net 30 (default) and Net 60 with a 1.5% fee, paid on account by invoice |
+| Quote extension ([#929](https://github.com/Universal-Commerce-Protocol/ucp/issues/929), draft) | `quote` on cart, checkout and order | same tools | Firm quotes, price proposals, pending review, accept by id, invalidation, Cart to Checkout to Order |
 
 Protocol behaviour that's implemented and tested:
 - **Conformance:** every response is validated in tests against the **official UCP JSON
@@ -49,7 +52,7 @@ Requires Node.js 22+ and pnpm.
 
 ```bash
 pnpm install
-pnpm test          # 92 tests, including schema conformance and a real MCP client
+pnpm test          # 111 tests, including schema conformance and a real MCP client
 pnpm start         # mock SAP OCC on :9002, gateway on :8080
 ```
 
@@ -69,6 +72,13 @@ curl -s -X POST localhost:8080/ucp/carts -H "$H" -H "$A" -H "$J" -H 'idempotency
   -d '{"line_items":[{"item":{"id":"HX-1040"},"quantity":500}],"quote":{"proposal":{}}}'
 
 # Accept it: PUT the same line items with quote.accepted_id = the returned quote.id
+
+# Check out on account: the accepted quotation carries over, Net 30 is selected by default
+curl -s -X POST localhost:8080/ucp/checkout-sessions -H "$H" -H "$A" -H "$J" -H 'idempotency-key: demo-2' \
+  -d '{"cart_id":"cart_…","line_items":[]}'
+curl -s -X POST localhost:8080/ucp/checkout-sessions/chk_…/complete -H "$H" -H "$A" -H "$J" -H 'idempotency-key: demo-3' \
+  -d '{"payment":{}}'
+curl -s localhost:8080/ucp/orders/ord_… -H "$H" -H "$A"
 ```
 
 ### MCP
@@ -100,6 +110,30 @@ The policy is a pluggable interface (`QuotePolicy`), so rules, a model or a sale
 `new ThresholdQuotePolicy(0.03, 0.1, false)` answers `{}` with `quote_unavailable` instead of a
 quotation, for a Business whose answer would reveal its floor (the MAY discussed on #929).
 
+### Checkout and orders
+
+Account buyers check out **on account**: there are no payment handlers, and the Checkout offers
+two [payment terms](https://ucp.dev/2026-08-25/specification/payment/extensions/terms), Net 30
+(the default) and Net 60 with a 1.5% fee, which appears as its own `fee` totals entry. The
+selected term's invoice amount always equals the Checkout `total`. Complete takes `payment: {}`.
+
+- **Cart to Checkout:** `cart_id` carries the cart's lines and quote state forward with the same
+  ids; a `quote` sent with it is ignored. Converting the same cart again returns the open
+  Checkout. While both exist, changes on the Checkout are reflected back to the Cart, and the
+  Cart is cleared when the order is placed.
+- **Quote on Checkout:** propose and accept on the Checkout with Update, exactly as on a Cart.
+  Completing while `quoted` or `pending` pays the totals as they stand, and the Order carries no
+  quote; only an accepted quotation reaches the Order, as `{id, subtotal}`.
+- **`payment_term_changed`** is reported whenever the amount due under the selected term changes
+  between responses, including when a quotation is accepted, as #929 requires.
+- **No surprise totals at completion.** Complete reprices first. If that changes what the buyer
+  pays (a re-issued quotation, a new term amount), the Checkout comes back with the warnings and
+  no order, so the buyer can review it; the next Complete places the order at the new total.
+- **Without a linked account** there is nothing to pay with, so the Checkout is
+  `requires_escalation` with a `continue_url` to the storefront.
+- The **Order** carries the line items, totals, the accepted quotation and the accepted term
+  (`payment.accepted_term`), now with the invoice's `due_at`. A completed Checkout is immutable.
+
 With `ADMIN_TOKEN` set, two routes stand in for a sales desk:
 
 | Route | Does |
@@ -111,7 +145,8 @@ With `ADMIN_TOKEN` set, two routes stand in for a sales desk:
 
 A black-box checker for **any** UCP Business that advertises the #929 quote extension on Cart.
 It discovers the Business through `/.well-known/ucp`, runs the extension's lifecycle over REST,
-and reports each vector against the #929 section it checks:
+and reports each vector against the #929 section it checks. If the Business also advertises
+Checkout, it checks the Cart to Checkout to Order projection too.
 
 Run it without cloning anything, as a single dependency-free file:
 
@@ -122,7 +157,7 @@ npx ucp-quote-conformance --origin https://business.example --token <buyer acces
 or in CI, as a GitHub Action:
 
 ```yaml
-- uses: swapnull-in/ucp-supplier-gateway@v0.1.1
+- uses: swapnull-in/ucp-supplier-gateway@v0.2.0
   with:
     origin: https://business.example
     token: ${{ secrets.UCP_TEST_BUYER_TOKEN }}
@@ -136,6 +171,7 @@ pnpm conformance --origin https://business.example --token <buyer access token> 
   --item SKU-1:10 --item SKU-2:20          # orderable test items; the second enables extra-line checks
   [--proposal 12345]                       # if the Business answers {} with quote_unavailable
   [--admin-token … --account-id …]         # this gateway's admin routes, for withdraw and out-of-band vectors
+  [--place-orders]                         # complete test checkouts to check the Order: places REAL orders
   [--json]
 ```
 
@@ -145,12 +181,16 @@ pnpm conformance --origin https://business.example --token <buyer access token> 
 | `Q-IDLE`, `Q-QUOTED`, `Q-ACCEPT`, `Q-REPEAT`, `Q-IMMUT` | Idle `{}`; quotation shape; accept by id with exactly one signed `quote` totals entry; repeat is a no-op; ids are immutable |
 | `Q-INVAL`, `Q-REUSE`, `Q-STALE`, `Q-BOTH` | Quantity changes invalidate; invalidated or unknown ids fail closed with `quote_changed`; proposal plus `accepted_id` gets `quote_unavailable` |
 | `Q-WITHDRAW`, `Q-OOB` | Withdrawal keeps id and subtotal; out-of-band quotations bind by items, quantities and currency (needs Business hooks) |
+| `Q-CO` | Cart to Checkout keeps a quoted and an accepted quotation's id and status, with one `quote` totals entry (needs Checkout; the test checkouts are canceled afterwards) |
+| `Q-ORDER`, `Q-DONE` | The Order carries only the accepted quotation's `{id, subtotal}`; completing while quoted leaves no Order quote (needs `--place-orders`) |
 
-Vectors that can't be observed from outside (expiry over time, currency or unit changes, Checkout
-and Order projection, Platform behaviour) are reported **N/A with the reason**, never as passes.
-It exits non-zero on any failure, so it can gate CI. Against this gateway: 13 passed, 0 failed, 9 not observable.
+The test token needs `dev.ucp.shopping.checkout:manage` (and `dev.ucp.shopping.order:read` for
+the Order vectors); without it the checkout vectors are skipped, not failed. Vectors that can't be
+observed from outside (expiry over time, currency or unit changes, Platform behaviour) are
+reported **N/A with the reason**, never as passes. It exits non-zero on any failure, so it can gate
+CI. Against this gateway with `--place-orders`: 16 passed, 0 failed, 6 not observable.
 The runner is tested against deliberately broken Businesses (silent invalidation, duplicate totals
-entries, a missing capability) to make sure it fails them.
+entries, quote state leaking onto the Order, a missing capability) to make sure it fails them.
 
 ## Architecture
 
@@ -190,8 +230,10 @@ passes UCP authority binding.
 - **Identity linking is stubbed:** static tokens map to buyer accounts. Production needs a UCP
   identity-linking OAuth server.
 - **No request signature verification** (RFC 9421) yet.
-- **In-memory stores** for carts and idempotency keys; production needs Postgres.
-- **No checkout, orders or payments.** Carts and quotes only.
+- **In-memory stores** for carts, checkouts, orders and idempotency keys; production needs Postgres.
+- **On-account payment only.** No payment handlers or instruments, no tax or shipping calculation
+  (they go on the invoice), no fulfillment selection, and orders aren't sent to the backend yet.
+  No confirmation email, which UCP requires of a production Business.
 - **The quote extension follows a draft** (#929 / PR #930) and will change with it. It is served
   under the gateway's own namespace until `dev.ucp.common.quote` is released.
 - **Price falls under a quotation: our own rule, pending the spec.** If the account price for the
@@ -216,7 +258,8 @@ passes UCP authority binding.
 
 - Postgres stores; RFC 9421 signature verification; real identity linking
 - Track #929 / #877 / #969 as they evolve; per-line quoted prices if the spec adds them
-- Checkout and order, with async completion (`complete_in_progress`) for slow backends
+- Orders placed in the backend (OCC `placeOrder` with the B2B cost center), with async
+  completion (`complete_in_progress`) for slow backends; fulfillment and tax
 - A second backend adapter
 
 ## Contributing

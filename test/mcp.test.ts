@@ -6,7 +6,7 @@ import { buildApp } from "../src/app.js";
 import { OccBackend } from "../src/backend/occ/client.js";
 import { buildMockOcc } from "../src/backend/occ/mock-server.js";
 import { UCP_PROTOCOL_ERROR } from "../src/mcp.js";
-import { SCOPE_CART_MANAGE, SCOPE_CATALOG_LOOKUP, SCOPE_CATALOG_SEARCH, StaticAccountResolver } from "../src/ucp/accounts.js";
+import { SCOPE_CART_MANAGE, SCOPE_CATALOG_LOOKUP, SCOPE_CATALOG_SEARCH, SCOPE_CHECKOUT_MANAGE, SCOPE_ORDER_READ, StaticAccountResolver } from "../src/ucp/accounts.js";
 import { DRAFT_QUOTE_ID, loadDraftQuoteSchema } from "../src/ucp/quote-schema.js";
 import { UcpSchemas } from "../src/ucp/schemas.js";
 
@@ -21,7 +21,7 @@ let mcpUrl: URL;
 beforeAll(async () => {
   occ = buildMockOcc();
   const occUrl = await occ.listen({ port: 0, host: "127.0.0.1" });
-  const scopes = [SCOPE_CATALOG_SEARCH, SCOPE_CATALOG_LOOKUP, SCOPE_CART_MANAGE];
+  const scopes = [SCOPE_CATALOG_SEARCH, SCOPE_CATALOG_LOOKUP, SCOPE_CART_MANAGE, SCOPE_CHECKOUT_MANAGE, SCOPE_ORDER_READ];
   app = buildApp({
     backend: new OccBackend({ baseUrl: occUrl, siteId: "powertools", tokenFor: async (a) => ({ acme_industrial: "occ-token-acme" })[a.id] }),
     accounts: new StaticAccountResolver({ "tok-acme": { account: { id: "acme_industrial", name: "Acme" }, scopes } }),
@@ -50,7 +50,10 @@ describe("UCP MCP binding", () => {
   it("lists the UCP shopping tools that are implemented", async () => {
     const client = await connect();
     const { tools } = await client.listTools();
-    expect(tools.map((t) => t.name).sort()).toEqual(["cancel_cart", "create_cart", "get_cart", "lookup_catalog", "search_catalog", "update_cart"]);
+    expect(tools.map((t) => t.name).sort()).toEqual([
+      "cancel_cart", "cancel_checkout", "complete_checkout", "create_cart", "create_checkout", "get_cart", "get_checkout",
+      "get_order", "lookup_catalog", "search_catalog", "update_cart", "update_checkout",
+    ]);
     expect(tools.find((t) => t.name === "get_cart")!.inputSchema.required).toEqual(["meta", "id"]);
     await client.close();
   });
@@ -82,6 +85,24 @@ describe("UCP MCP binding", () => {
 
     const fetched = structured(await client.callTool({ name: "get_cart", arguments: { meta: META, id: created.id } }));
     expect(fetched.quote.status).toBe("accepted");
+    await client.close();
+  });
+
+  it("checks out a quoted cart and reads the order", async () => {
+    const client = await connect("tok-acme");
+    const line_items = [{ item: { id: "SG-220" }, quantity: 100 }];
+    const cart = structured(await client.callTool({ name: "create_cart", arguments: { meta: META, cart: { line_items, quote: { proposal: {} } } } }));
+    await client.callTool({ name: "update_cart", arguments: { meta: META, id: cart.id, cart: { line_items, quote: { accepted_id: cart.quote.id } } } });
+    const checkout = structured(await client.callTool({ name: "create_checkout", arguments: { meta: META, checkout: { cart_id: cart.id, line_items: [] } } }));
+    expect(checkout.quote).toMatchObject({ status: "accepted", id: cart.quote.id });
+    const done = structured(await client.callTool({
+      name: "complete_checkout",
+      arguments: { meta: { ...META, "idempotency-key": "mcp-complete-1" }, id: checkout.id, checkout: { payment: {} } },
+    }));
+    expect(done.status).toBe("completed");
+    const order = structured(await client.callTool({ name: "get_order", arguments: { meta: META, id: done.order.id } }));
+    expect(order.quote).toEqual({ id: cart.quote.id, subtotal: cart.quote.subtotal });
+    expect(order.payment.accepted_term.id).toBe("net_30");
     await client.close();
   });
 

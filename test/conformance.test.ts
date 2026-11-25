@@ -4,7 +4,7 @@ import { formatReport, gatewayAdminHooks, runConformance, type VectorResult } fr
 import { buildApp } from "../src/app.js";
 import { OccBackend } from "../src/backend/occ/client.js";
 import { buildMockOcc } from "../src/backend/occ/mock-server.js";
-import { SCOPE_CART_MANAGE, SCOPE_CATALOG_LOOKUP, SCOPE_CATALOG_SEARCH, StaticAccountResolver } from "../src/ucp/accounts.js";
+import { SCOPE_CART_MANAGE, SCOPE_CATALOG_LOOKUP, SCOPE_CATALOG_SEARCH, SCOPE_CHECKOUT_MANAGE, SCOPE_ORDER_READ, StaticAccountResolver } from "../src/ucp/accounts.js";
 
 let occ: FastifyInstance;
 let gateway: FastifyInstance;
@@ -13,13 +13,16 @@ let origin: string;
 beforeAll(async () => {
   occ = buildMockOcc();
   const occUrl = await occ.listen({ port: 0, host: "127.0.0.1" });
-  const scopes = [SCOPE_CATALOG_SEARCH, SCOPE_CATALOG_LOOKUP, SCOPE_CART_MANAGE];
+  const scopes = [SCOPE_CATALOG_SEARCH, SCOPE_CATALOG_LOOKUP, SCOPE_CART_MANAGE, SCOPE_CHECKOUT_MANAGE, SCOPE_ORDER_READ];
   // The served profile must point at the address the runner can reach, so bind first.
   const port = await freePort();
   origin = `http://127.0.0.1:${port}`;
   gateway = buildApp({
     backend: new OccBackend({ baseUrl: occUrl, siteId: "powertools", tokenFor: async (a) => ({ acme_industrial: "occ-token-acme" })[a.id] }),
-    accounts: new StaticAccountResolver({ "tok-acme": { account: { id: "acme_industrial", name: "Acme" }, scopes } }),
+    accounts: new StaticAccountResolver({
+      "tok-acme": { account: { id: "acme_industrial", name: "Acme" }, scopes },
+      "tok-cart-only": { account: { id: "acme_industrial", name: "Acme" }, scopes: [SCOPE_CATALOG_SEARCH, SCOPE_CATALOG_LOOKUP, SCOPE_CART_MANAGE] },
+    }),
     publicOrigin: origin,
     vendorNamespace: "com.example.gateway",
     storefrontOrigin: "https://supplier.example",
@@ -42,15 +45,31 @@ const config = () => ({
 const byId = (results: VectorResult[]) => Object.fromEntries(results.map((r) => [r.id, r]));
 
 describe("conformance runner against the reference gateway", () => {
-  it("passes every observable vector, with hooks", async () => {
-    const results = await runConformance({ ...config(), hooks: gatewayAdminHooks(origin, "admin-secret", "acme_industrial") });
+  it("passes every observable vector, with hooks and placing orders", async () => {
+    const results = await runConformance({ ...config(), hooks: gatewayAdminHooks(origin, "admin-secret", "acme_industrial"), placeOrders: true });
     const failures = results.filter((r) => r.outcome === "fail");
     expect(failures, formatReport(results)).toEqual([]);
     const r = byId(results);
-    for (const id of ["DISCOVERY", "Q-IDLE", "Q-QUOTED", "Q-ACCEPT", "Q-REPEAT", "Q-IMMUT", "Q-INVAL", "Q-REUSE", "Q-STALE", "Q-BOTH", "Q-WITHDRAW", "Q-OOB", "SCHEMA"]) {
+    for (const id of ["DISCOVERY", "Q-IDLE", "Q-QUOTED", "Q-ACCEPT", "Q-REPEAT", "Q-IMMUT", "Q-INVAL", "Q-REUSE", "Q-STALE", "Q-BOTH", "Q-WITHDRAW", "Q-OOB", "Q-CO", "Q-ORDER", "Q-DONE", "SCHEMA"]) {
       expect(r[id]?.outcome, `${id}: ${r[id]?.detail}`).toBe("pass");
     }
-    expect(results.filter((x) => x.outcome === "n/a")).toHaveLength(9);
+    expect(results.filter((x) => x.outcome === "n/a")).toHaveLength(6);
+  });
+
+  it("skips the checkout vectors when the token can't create checkouts", async () => {
+    const r = byId(await runConformance({ ...config(), token: "tok-cart-only", placeOrders: true }));
+    expect(r["Q-ACCEPT"]!.outcome).toBe("pass");
+    for (const id of ["Q-CO", "Q-ORDER", "Q-DONE"]) {
+      expect(r[id]!.outcome).toBe("skip");
+      expect(r[id]!.detail).toContain("dev.ucp.shopping.checkout:manage");
+    }
+  });
+
+  it("checks Cart to Checkout without placing orders unless asked", async () => {
+    const r = byId(await runConformance(config()));
+    expect(r["Q-CO"]!.outcome).toBe("pass");
+    expect(r["Q-ORDER"]!.outcome).toBe("skip");
+    expect(r["Q-DONE"]!.detail).toContain("--place-orders");
   });
 
   it("skips Business-side vectors without hooks instead of passing them", async () => {
@@ -82,6 +101,17 @@ describe("conformance runner catches broken Businesses", () => {
     const r = byId(await runConformance({ ...config(), origin: proxy.origin, fetch: proxy.fetch }));
     expect(r["Q-ACCEPT"]!.outcome).toBe("fail");
     expect(r["Q-ACCEPT"]!.detail).toContain("2 quote entries");
+    await proxy.close();
+  });
+
+  it("fails a Business that projects quote lifecycle state onto the Order", async () => {
+    const proxy = await proxyServer(origin, (body) => {
+      if (typeof body.checkout_id === "string" && body.quote) body.quote = { ...body.quote, status: "accepted" };
+      return body;
+    });
+    const r = byId(await runConformance({ ...config(), origin: proxy.origin, fetch: proxy.fetch, placeOrders: true }));
+    expect(r["Q-ORDER"]!.outcome).toBe("fail");
+    expect(r["Q-CO"]!.outcome).toBe("pass");
     await proxy.close();
   });
 

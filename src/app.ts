@@ -5,6 +5,8 @@ import { registerMcp } from "./mcp.js";
 import { type IdempotencyStore, InMemoryIdempotencyStore } from "./idempotency.js";
 import type { AccountResolver } from "./ucp/accounts.js";
 import { type CartStore, InMemoryCartStore } from "./ucp/cart.js";
+import { type CheckoutStore, InMemoryCheckoutStore, InMemoryOrderStore, type OrderStore } from "./ucp/checkout.js";
+import { registerCheckoutRoutes } from "./ucp/checkout-routes.js";
 import { InMemoryQuoteBook, type QuoteBook } from "./ucp/quote-book.js";
 import { registerCartRoutes } from "./ucp/cart-routes.js";
 import { errorResponse } from "./ucp/catalog.js";
@@ -23,10 +25,13 @@ export interface AppOptions {
   /** Namespace for vendor capabilities; derived from publicOrigin when omitted. */
   vendorNamespace?: string;
   carts?: CartStore;
+  checkouts?: CheckoutStore;
+  orders?: OrderStore;
   idempotency?: IdempotencyStore;
   quotePolicy?: QuotePolicy;
   quoteBook?: QuoteBook;
   cartTtlMs?: number;
+  checkoutTtlMs?: number;
   quotationTtlMs?: number;
   /** Enables the admin routes (answer or withdraw cart quotes, issue out-of-band quotes) when set. */
   adminToken?: string;
@@ -97,6 +102,13 @@ export function buildApp(opts: AppOptions): FastifyInstance {
   };
   if (opts.adminToken) cartDeps.adminToken = opts.adminToken;
   registerCartRoutes(app, SHOPPING_BASE, cartDeps);
+  registerCheckoutRoutes(app, SHOPPING_BASE, {
+    ...cartDeps,
+    checkouts: opts.checkouts ?? new InMemoryCheckoutStore(),
+    orders: opts.orders ?? new InMemoryOrderStore(),
+    storefrontOrigin: opts.storefrontOrigin,
+    checkoutTtlMs: opts.checkoutTtlMs ?? DAY_MS,
+  });
 
   // UCP MCP binding over the same routes.
   registerMcp(app, `${SHOPPING_BASE}/mcp`, SHOPPING_BASE);

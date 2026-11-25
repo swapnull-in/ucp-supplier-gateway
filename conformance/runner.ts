@@ -4,8 +4,9 @@ import { UcpSchemas } from "../src/ucp/schemas.js";
 
 // Black-box conformance checks for the UCP quote extension proposed in #929 (draft schema:
 // PR #930), run over REST against any Business that advertises it on a Cart. Each vector cites
-// the #929 section it checks. What can't be observed from outside (time passing, checkout,
-// order projection, Platform behaviour) is reported N/A with the reason, never as a pass.
+// the #929 section it checks. What can't be observed from outside (time passing, Platform
+// behaviour) is reported N/A with the reason, never as a pass. Checkout vectors run when the
+// Business advertises Checkout; the ones that place orders run only with `placeOrders`.
 
 export type Outcome = "pass" | "fail" | "skip" | "n/a";
 
@@ -36,6 +37,8 @@ export interface ConformanceConfig {
   /** Used when the Business answers `{}` with quote_unavailable: a subtotal it will quote or accept. */
   proposalSubtotal?: number;
   hooks?: BusinessHooks;
+  /** Complete checkouts to check Order projection. This places real orders on the Business. */
+  placeOrders?: boolean;
   fetch?: typeof fetch;
   /** Pre-loaded schemas (the bundled CLI ships them inline); defaults to the vendored files. */
   schemas?: { released: readonly object[]; draftQuote: { $id: string } };
@@ -52,9 +55,6 @@ const NOT_OBSERVABLE: [string, string, string, string][] = [
   ["Q-LAPSE", "An accepted quotation does not lapse", "§6", "needs time to pass"],
   ["Q-CUR", "A currency change invalidates an accepted quotation", "§6", "currency is set by the Business, not the request"],
   ["Q-UNIT", "A quantity_unit change invalidates an accepted quotation", "§6", "needs items with alternative sale units"],
-  ["Q-CO", "Cart to Checkout carries the quote ids", "§9", "needs the Checkout capability"],
-  ["Q-ORDER", "The Order carries only {id, subtotal}", "§9", "needs Checkout and Order"],
-  ["Q-DONE", "Completion while quoted or pending closes the cycle without an Order quote", "§8", "needs Checkout"],
   ["Q-UNK", "An unrecognized status is shown without an accept affordance", "§2", "Platform behaviour, not Business"],
   ["Q-PRICE", "A quotation never stands above a fallen price; it is re-issued as quoted", "proposed in #929 thread", "needs the Business's price to change; not yet in the spec"],
 ];
@@ -80,7 +80,7 @@ export async function runConformance(cfg: ConformanceConfig): Promise<VectorResu
   const schemas = cfg.schemas ? new UcpSchemas(cfg.schemas.released) : new UcpSchemas();
   schemas.addSchema(cfg.schemas?.draftQuote ?? loadDraftQuoteSchema());
   const schemaErrors: string[] = [];
-  let cartResponses = 0;
+  let checkedResponses = 0;
 
   const call = async (method: string, path: string, body?: unknown): Promise<Res> => {
     const headers: Record<string, string> = {
@@ -96,9 +96,10 @@ export async function runConformance(cfg: ConformanceConfig): Promise<VectorResu
     }
     const res = await http(`${rest.endpoint}${path}`, init);
     const json = (await res.json().catch(() => ({}))) as Json;
-    if (res.ok && json.id && Array.isArray(json.line_items)) {
-      cartResponses++;
-      const v = schemas.validateAbsolute(`${DRAFT_QUOTE_ID}#/$defs/dev.ucp.shopping.cart`, json);
+    const resource = path.startsWith("/carts") ? "cart" : path.startsWith("/checkout-sessions") ? "checkout" : path.startsWith("/orders") ? "order" : undefined;
+    if (resource && res.ok && json.id && Array.isArray(json.line_items)) {
+      checkedResponses++;
+      const v = schemas.validateAbsolute(`${DRAFT_QUOTE_ID}#/$defs/dev.ucp.shopping.${resource}`, json);
       if (!v.valid) schemaErrors.push(`${method} ${path}: ${v.errors.slice(0, 2).join("; ")}`);
     }
     return { status: res.status, body: json };
@@ -223,19 +224,94 @@ export async function runConformance(cfg: ConformanceConfig): Promise<VectorResu
       oobProblems.join("; ") || (items.length > 1 ? "" : "extra-line check skipped: configure a second item"));
   }
 
+  await checkoutVectors();
   return finish();
 
+  /** Cart to Checkout (Q-CO), and with `placeOrders`, the Order projection (Q-ORDER, Q-DONE). */
+  async function checkoutVectors() {
+    const titles = {
+      "Q-CO": ["Cart to Checkout carries the quote id and status", "§9"],
+      "Q-ORDER": ["The Order carries only the accepted quotation's {id, subtotal}", "§9"],
+      "Q-DONE": ["Completion while quoted closes the cycle without an Order quote", "§8"],
+    } as const;
+    const put = (id: keyof typeof titles, outcome: Outcome, detail = "") => record(id, titles[id][0], titles[id][1], outcome, detail);
+    const all = Object.keys(titles) as (keyof typeof titles)[];
+    if (!caps["dev.ucp.shopping.checkout"] || !extendsTo(caps[quoteCap!], "dev.ucp.shopping.checkout")) {
+      for (const id of all) put(id, "n/a", "the Business doesn't advertise Checkout with the quote extension");
+      return;
+    }
+    const toCheckout = async (cartId: string) => (await call("POST", "/checkout-sessions", { cart_id: cartId, line_items: [] })).body;
+    const probe = await call("POST", "/checkout-sessions", { cart_id: idle.id, line_items: [] });
+    if (probe.status === 401 || probe.status === 403) {
+      for (const id of all) put(id, "skip", `the token can't create checkouts (HTTP ${probe.status}); grant dev.ucp.shopping.checkout:manage`);
+      return;
+    }
+    if (probe.body.id && !cfg.placeOrders) await call("POST", `/checkout-sessions/${encodeURIComponent(probe.body.id)}/cancel`, {});
+
+    // Q-CO: an accepted quotation keeps its id and status; so does a quoted one.
+    const quotedCart = await openQuotation();
+    if (!quotedCart) {
+      for (const id of all) put(id, "skip", "couldn't obtain a quoted quotation");
+      return;
+    }
+    const quotedCheckout = await toCheckout(quotedCart.id);
+    const acceptedCart = await openQuotation();
+    const accepted: Json = acceptedCart ? (await updateCart(acceptedCart.id, { accepted_id: acceptedCart.quote.id })).body : {};
+    const acceptedCheckout = accepted.quote?.status === "accepted" ? await toCheckout(accepted.id) : undefined;
+    const coProblems: string[] = [];
+    if (!quotedCheckout.id) coProblems.push(`create from cart failed: ${firstMessage(quotedCheckout)}`);
+    else if (quotedCheckout.quote?.status !== "quoted" || quotedCheckout.quote?.id !== quotedCart.quote.id) coProblems.push(`quoted cart became ${JSON.stringify(quotedCheckout.quote)}`);
+    if (!acceptedCheckout) coProblems.push("couldn't accept a quotation to convert");
+    else {
+      if (acceptedCheckout.quote?.status !== "accepted" || acceptedCheckout.quote?.id !== accepted.quote.id) coProblems.push(`accepted cart became ${JSON.stringify(acceptedCheckout.quote)}`);
+      const entries = (acceptedCheckout.totals ?? []).filter((t: Json) => t.type === "quote");
+      if (entries.length !== 1) coProblems.push(`${entries.length} quote entries on the Checkout`);
+    }
+    put("Q-CO", coProblems.length ? "fail" : "pass", coProblems.join("; "));
+
+    if (!cfg.placeOrders) {
+      put("Q-ORDER", "skip", "needs --place-orders (places real orders on the Business)");
+      put("Q-DONE", "skip", "needs --place-orders (places real orders on the Business)");
+      for (const c of [quotedCheckout, acceptedCheckout]) if (c?.id) await call("POST", `/checkout-sessions/${encodeURIComponent(c.id)}/cancel`, {});
+      return;
+    }
+
+    /** Completes a Checkout with `payment: {}` and reads its Order, or says why it couldn't. */
+    const place = async (checkout: Json | undefined): Promise<{ order?: Json; why?: string }> => {
+      if (!checkout?.id) return { why: "no checkout" };
+      const done = (await call("POST", `/checkout-sessions/${encodeURIComponent(checkout.id)}/complete`, { payment: {} })).body;
+      if (done.status !== "completed" || !done.order?.id) return { why: `not completed with payment {}: status ${done.status}, ${firstMessage(done)}` };
+      if (!caps["dev.ucp.shopping.order"]) return { why: "completed, but the Order capability isn't advertised" };
+      const order = (await call("GET", `/orders/${encodeURIComponent(done.order.id)}`)).body;
+      return order.id ? { order } : { why: `Get Order failed: ${firstMessage(order)}` };
+    };
+
+    const placedAccepted = await place(acceptedCheckout);
+    if (!placedAccepted.order) put("Q-ORDER", "skip", placedAccepted.why);
+    else {
+      const q = placedAccepted.order.quote;
+      const ok = q && Object.keys(q).sort().join() === "id,subtotal" && q.id === accepted.quote.id && q.subtotal === accepted.quote.subtotal;
+      put("Q-ORDER", ok ? "pass" : "fail", ok ? "" : `Order quote ${JSON.stringify(q)}`);
+    }
+
+    const placedQuoted = await place(quotedCheckout);
+    if (!placedQuoted.order) put("Q-DONE", "skip", placedQuoted.why);
+    else put("Q-DONE", placedQuoted.order.quote === undefined ? "pass" : "fail", placedQuoted.order.quote === undefined ? "" : `Order quote ${JSON.stringify(placedQuoted.order.quote)}`);
+  }
+
   function finish() {
-    record("SCHEMA", `Cart responses validate against the #930 draft schema`, "§10", schemaErrors.length ? "fail" : cartResponses ? "pass" : "skip",
-      schemaErrors.length ? schemaErrors.slice(0, 3).join(" | ") : `${cartResponses} responses checked`);
+    record("SCHEMA", `Cart, Checkout and Order responses validate against the #930 draft schema`, "§10", schemaErrors.length ? "fail" : checkedResponses ? "pass" : "skip",
+      schemaErrors.length ? schemaErrors.slice(0, 3).join(" | ") : `${checkedResponses} responses checked`);
     for (const [id, title, ref, why] of NOT_OBSERVABLE) record(id, title, ref, "n/a", why);
     return results;
   }
 }
 
-function extendsCart(entries: Json[]): boolean {
-  return (entries ?? []).some((e) => (Array.isArray(e.extends) ? e.extends : [e.extends]).includes("dev.ucp.shopping.cart"));
+function extendsTo(entries: Json[], capability: string): boolean {
+  return (entries ?? []).some((e) => (Array.isArray(e.extends) ? e.extends : [e.extends]).includes(capability));
 }
+
+const extendsCart = (entries: Json[]) => extendsTo(entries, "dev.ucp.shopping.cart");
 
 const codes = (body: Json): string[] => (body.messages ?? []).map((m: Json) => m.code);
 const hasCode = (body: Json, code: string) => codes(body).includes(code);

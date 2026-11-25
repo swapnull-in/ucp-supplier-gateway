@@ -68,11 +68,12 @@ const get = (id: string, headers: Record<string, string> = ACME) => app.inject({
 const totalOf = (body: { totals: { type: string; amount: number }[] }, type: string) => body.totals.find((t) => t.type === type)?.amount;
 
 describe("profile and served schema", () => {
-  it("advertises cart and the quote extension, authority-bound to our origin", async () => {
+  it("advertises cart, checkout, order, payment terms and the quote extension, authority-bound to our origin", async () => {
     const profile = (await app.inject({ method: "GET", url: "/.well-known/ucp" })).json();
     expectValid(schemas.validate("profile.json#/$defs/business_schema", profile));
     const quote = profile.ucp.capabilities[`${NS}.common.quote`][0];
-    expect(quote).toMatchObject({ extends: "dev.ucp.shopping.cart", schema: `${ORIGIN}/ucp/schemas/quote.json` });
+    expect(quote).toMatchObject({ extends: ["dev.ucp.shopping.cart", "dev.ucp.shopping.checkout", "dev.ucp.shopping.order"], schema: `${ORIGIN}/ucp/schemas/quote.json` });
+    expect(profile.ucp.capabilities["dev.ucp.common.payment.terms"][0].extends).toEqual(["dev.ucp.shopping.checkout", "dev.ucp.shopping.order"]);
     const reversed = new URL(quote.schema).hostname.split(".").reverse().join(".");
     expect(`${NS}.common.quote`.startsWith(`${reversed}.`)).toBe(true);
   });

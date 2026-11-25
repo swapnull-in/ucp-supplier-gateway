@@ -1,7 +1,7 @@
 import { buildApp } from "./app.js";
 import { OccBackend } from "./backend/occ/client.js";
 import { buildMockOcc } from "./backend/occ/mock-server.js";
-import { SCOPE_CART_MANAGE, SCOPE_CATALOG_LOOKUP, SCOPE_CATALOG_SEARCH, StaticAccountResolver } from "./ucp/accounts.js";
+import { SCOPE_CART_MANAGE, SCOPE_CATALOG_LOOKUP, SCOPE_CATALOG_SEARCH, SCOPE_CHECKOUT_MANAGE, SCOPE_ORDER_READ, StaticAccountResolver } from "./ucp/accounts.js";
 
 // Local demo: a mock SAP OCC storefront plus the gateway in front of it.
 const OCC_PORT = Number(process.env.MOCK_OCC_PORT ?? 9002);
@@ -15,7 +15,7 @@ if (!process.env.OCC_BASE_URL) {
 // localhost has no reverse-domain form, so the demo uses a placeholder namespace. In production
 // it is derived from PUBLIC_ORIGIN so served capability schemas pass UCP authority binding.
 const NAMESPACE = process.env.VENDOR_NAMESPACE ?? "com.example.gateway";
-const scopes = [SCOPE_CATALOG_SEARCH, SCOPE_CATALOG_LOOKUP, SCOPE_CART_MANAGE];
+const scopes = [SCOPE_CATALOG_SEARCH, SCOPE_CATALOG_LOOKUP, SCOPE_CART_MANAGE, SCOPE_CHECKOUT_MANAGE, SCOPE_ORDER_READ];
 
 // Demo identity-linking grants: UCP access token -> buyer account, and account -> OCC token.
 const accounts = new StaticAccountResolver({

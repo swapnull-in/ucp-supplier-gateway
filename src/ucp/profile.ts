@@ -1,3 +1,4 @@
+import { TERMS_CAPABILITY } from "./checkout.js";
 import { UCP_VERSION } from "./schemas.js";
 
 export interface ProfileOptions {
@@ -46,16 +47,30 @@ export function businessProfile({ publicOrigin, shoppingBase, quoteCapability, q
         "dev.ucp.shopping.cart": [
           { version: UCP_VERSION, spec: `${SPEC}/shopping/cart`, schema: `${SCHEMAS}/shopping/cart.json` },
         ],
+        "dev.ucp.shopping.checkout": [
+          { version: UCP_VERSION, spec: `${SPEC}/shopping/checkout`, schema: `${SCHEMAS}/shopping/checkout.json` },
+        ],
+        "dev.ucp.shopping.order": [
+          { version: UCP_VERSION, spec: `${SPEC}/shopping/order`, schema: `${SCHEMAS}/shopping/order.json` },
+        ],
+        [TERMS_CAPABILITY]: [
+          {
+            version: UCP_VERSION,
+            spec: `${SPEC}/payment/extensions/terms`,
+            schema: `${SCHEMAS}/common/payment_terms.json`,
+            extends: ["dev.ucp.shopping.checkout", "dev.ucp.shopping.order"],
+          },
+        ],
         [quoteCapability]: [
           {
             version: UCP_VERSION,
             spec: "https://github.com/Universal-Commerce-Protocol/ucp/issues/929",
             schema: quoteSchemaUrl,
-            extends: "dev.ucp.shopping.cart",
+            extends: ["dev.ucp.shopping.cart", "dev.ucp.shopping.checkout", "dev.ucp.shopping.order"],
           },
         ],
       },
-      // Checkout isn't offered yet, so there is nothing to pay with.
+      // Account buyers pay on invoice under payment terms, so no payment handlers are offered.
       payment_handlers: {},
     },
   };

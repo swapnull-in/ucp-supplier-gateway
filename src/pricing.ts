@@ -37,7 +37,7 @@ export interface PricingMessage {
   type: "error" | "warning" | "info";
   code: string;
   content: string;
-  severity?: "recoverable";
+  severity?: "recoverable" | "requires_buyer_input";
   /** RFC 9535 path into the response, e.g. `$.line_items[0].quantity`. */
   path?: string;
 }

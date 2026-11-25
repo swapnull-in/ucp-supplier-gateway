@@ -3,6 +3,8 @@ import type { BuyerAccount } from "../backend/types.js";
 export const SCOPE_CATALOG_SEARCH = "dev.ucp.shopping.catalog.search:read";
 export const SCOPE_CATALOG_LOOKUP = "dev.ucp.shopping.catalog.lookup:read";
 export const SCOPE_CART_MANAGE = "dev.ucp.shopping.cart:manage";
+export const SCOPE_CHECKOUT_MANAGE = "dev.ucp.shopping.checkout:manage";
+export const SCOPE_ORDER_READ = "dev.ucp.shopping.order:read";
 
 export interface AccountGrant {
   account: BuyerAccount;

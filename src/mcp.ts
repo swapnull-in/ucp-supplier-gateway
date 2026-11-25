@@ -19,7 +19,7 @@ interface ToolRoute {
   method: Method;
   path: (args: ToolArgs) => string;
   /** Name of the argument carrying the request body, if any. */
-  body?: "catalog" | "cart";
+  body?: "catalog" | "cart" | "checkout";
   needsId?: boolean;
   description: string;
 }
@@ -29,6 +29,7 @@ interface ToolArgs {
   id?: string;
   catalog?: unknown;
   cart?: unknown;
+  checkout?: unknown;
 }
 
 const enc = encodeURIComponent;
@@ -40,6 +41,12 @@ const TOOLS: Record<string, ToolRoute> = {
   get_cart: { method: "GET", path: (a) => `/carts/${enc(a.id!)}`, needsId: true, description: "Get a cart, re-priced at current account prices and stock." },
   update_cart: { method: "PUT", path: (a) => `/carts/${enc(a.id!)}`, body: "cart", needsId: true, description: "Replace a cart's line items; may propose a price or accept a quotation by id via cart.quote." },
   cancel_cart: { method: "POST", path: (a) => `/carts/${enc(a.id!)}/cancel`, needsId: true, description: "Cancel a cart; returns its last state." },
+  create_checkout: { method: "POST", path: () => "/checkout-sessions", body: "checkout", description: "Start a checkout, from a cart via checkout.cart_id (its quote carries over) or from line items. Linked accounts pay on account under Net 30 or Net 60 terms." },
+  get_checkout: { method: "GET", path: (a) => `/checkout-sessions/${enc(a.id!)}`, needsId: true, description: "Get a checkout, re-priced at current account prices." },
+  update_checkout: { method: "PUT", path: (a) => `/checkout-sessions/${enc(a.id!)}`, body: "checkout", needsId: true, description: "Replace a checkout's line items; may propose or accept a quotation via checkout.quote, or pick a payment term via checkout.payment.selected_term_id." },
+  complete_checkout: { method: "POST", path: (a) => `/checkout-sessions/${enc(a.id!)}/complete`, body: "checkout", needsId: true, description: "Place the order. Returns the checkout without an order if the price changed since the last response, so the buyer can review it." },
+  cancel_checkout: { method: "POST", path: (a) => `/checkout-sessions/${enc(a.id!)}/cancel`, needsId: true, description: "Cancel an open checkout." },
+  get_order: { method: "GET", path: (a) => `/orders/${enc(a.id!)}`, needsId: true, description: "Get an order placed through checkout, with the accepted quotation and payment term." },
 };
 
 const META_SCHEMA = {
@@ -68,7 +75,7 @@ function inputSchema(route: ToolRoute) {
 /** Statuses that are protocol errors under UCP's two-layer model; everything else is a result. */
 const PROTOCOL_ERROR_STATUSES = new Set([400, 401, 403, 409, 413, 429]);
 
-export function registerMcp(app: FastifyInstance, path: string, restBase: string, serverInfo = { name: "ucp-supplier-gateway", version: "0.1.1" }) {
+export function registerMcp(app: FastifyInstance, path: string, restBase: string, serverInfo = { name: "ucp-supplier-gateway", version: "0.2.0" }) {
   app.post(path, async (req, reply) => {
     const authorization = req.headers.authorization;
     const headerKey = req.headers["idempotency-key"];
@@ -91,8 +98,8 @@ export function registerMcp(app: FastifyInstance, path: string, restBase: string
       if (route.body && payload !== undefined && (typeof payload !== "object" || payload === null)) {
         throw new McpError(ErrorCode.InvalidParams, `${route.body} must be an object`);
       }
-      if (route.body === "cart" && payload && "id" in (payload as object)) {
-        throw new McpError(ErrorCode.InvalidParams, "cart must not contain id; pass it as the top-level id");
+      if ((route.body === "cart" || route.body === "checkout") && payload && "id" in (payload as object)) {
+        throw new McpError(ErrorCode.InvalidParams, `${route.body} must not contain id; pass it as the top-level id`);
       }
 
       const headers: Record<string, string> = { "ucp-agent": `profile="${profile}"` };

@@ -46,3 +46,4 @@ jobs:
           items: SG-220:10 HX-1040:20
           admin-token: ci-admin
           account-id: acme_industrial
+          place-orders: "true"

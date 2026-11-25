@@ -171,19 +171,19 @@ export function registerCartRoutes(app: FastifyInstance, base: string, deps: Car
 }
 
 /** Fetches the out-of-band quotation an `accepted_id` names, so the pure state machine can bind it. */
-async function lookupExternal(deps: CartDeps, quote: QuoteRequest | undefined): Promise<ExternalQuote | undefined> {
+export async function lookupExternal(deps: Pick<CartDeps, "quoteBook">, quote: QuoteRequest | undefined): Promise<ExternalQuote | undefined> {
   return quote?.accepted_id ? deps.quoteBook.get(quote.accepted_id) : undefined;
 }
 
-interface Caller {
+export interface Caller {
   owner: string;
   account?: BuyerAccount;
 }
 
-async function identify(req: FastifyRequest, reply: FastifyReply, deps: CartDeps): Promise<Caller | undefined> {
+export async function identify(req: FastifyRequest, reply: FastifyReply, deps: Pick<CartDeps, "accounts">, scope = SCOPE_CART_MANAGE): Promise<Caller | undefined> {
   const platform = requirePlatform(req, reply);
   if (!platform) return undefined;
-  const auth = await authenticate(req, reply, deps.accounts, SCOPE_CART_MANAGE);
+  const auth = await authenticate(req, reply, deps.accounts, scope);
   if (!auth.ok) return undefined;
   return auth.account ? { owner: `acct:${auth.account.id}`, account: auth.account } : { owner: `anon:${platform.href}` };
 }
@@ -199,7 +199,7 @@ async function ownCart(id: string, owner: string, deps: CartDeps): Promise<Cart 
   return cart;
 }
 
-function quoteContext(deps: CartDeps, priced: ReturnType<typeof priceLines>, caller: Caller, now: Date, external?: ExternalQuote) {
+export function quoteContext(deps: Pick<CartDeps, "quotationTtlMs" | "quotePolicy">, priced: ReturnType<typeof priceLines>, caller: Caller, now: Date, external?: ExternalQuote) {
   return {
     resolveExternal: (id: string) => (external?.id === id ? external : undefined),
     binding: lineBinding(priced),
@@ -215,10 +215,10 @@ function quoteContext(deps: CartDeps, priced: ReturnType<typeof priceLines>, cal
  * Cart operations SHOULD support idempotency, and MUST honour a provided key (cart/rest.md).
  * Without a key the operation simply runs.
  */
-async function idempotent(
+export async function idempotent(
   req: FastifyRequest,
   reply: FastifyReply,
-  deps: CartDeps,
+  deps: Pick<CartDeps, "idempotency">,
   scope: string,
   run: () => Promise<{ statusCode: number; body: unknown }>,
 ) {
@@ -250,14 +250,14 @@ async function runSafely(req: FastifyRequest, run: () => Promise<{ statusCode: n
   try {
     return await run();
   } catch (err) {
-    req.log.error({ err }, "cart operation failed");
-    return { statusCode: 500, body: errorResponse("backend_unavailable", "Carts are temporarily unavailable") };
+    req.log.error({ err }, "operation failed");
+    return { statusCode: 500, body: errorResponse("backend_unavailable", "Temporarily unavailable; retry shortly") };
   }
 }
 
 type ParsedCart = { lines: LineRequest[]; quote?: QuoteRequest } | { error: string };
 
-function parseCartBody(body: CartBody | undefined, quotable: boolean): ParsedCart {
+export function parseCartBody(body: CartBody | undefined, quotable: boolean): ParsedCart {
   const raw = body?.line_items;
   if (!Array.isArray(raw) || raw.length === 0 || raw.length > MAX_LINES) {
     return { error: `line_items must be an array of 1-${MAX_LINES} items` };
@@ -295,6 +295,6 @@ function parseCartBody(body: CartBody | undefined, quotable: boolean): ParsedCar
   return { lines, quote };
 }
 
-function isAmount(v: unknown): boolean {
+export function isAmount(v: unknown): boolean {
   return typeof v === "number" && Number.isSafeInteger(v) && v >= 0;
 }
