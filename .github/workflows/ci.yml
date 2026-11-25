@@ -18,8 +18,9 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm typecheck
       - run: pnpm build:conformance
-      # The bundle is committed for the GitHub Action; it must match the sources.
-      - run: git diff --exit-code -- conformance/package/dist
+      # The bundle is committed for the GitHub Action; it must exist and match the sources
+      # (porcelain also catches a missing or untracked bundle, which git diff would not).
+      - run: test -z "$(git status --porcelain -- conformance/package/dist)" || { git status -- conformance/package/dist; exit 1; }
       - run: pnpm test
 
   # Dogfoods the GitHub Action (uses: ./) against the reference gateway started in the job.
