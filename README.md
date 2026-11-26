@@ -157,7 +157,7 @@ npx ucp-quote-conformance --origin https://business.example --token <buyer acces
 or in CI, as a GitHub Action:
 
 ```yaml
-- uses: swapnull-in/ucp-supplier-gateway@v0.2.0
+- uses: swapnull-in/ucp-supplier-gateway@v0.2.1
   with:
     origin: https://business.example
     token: ${{ secrets.UCP_TEST_BUYER_TOKEN }}
@@ -242,7 +242,10 @@ passes UCP authority binding.
   an id) and reports `quote_changed`, so the buyer never pays more than today's price. The new
   quotation is `quoted`, even if the old one was accepted: accepting is the Buyer's act, so the
   Buyer accepts the new id. A rise leaves the quotation alone, and so does a quotation set above
-  list on purpose, until the price falls below list. The draft spec doesn't settle this yet; see
+  list on purpose, until the price falls below list. Every quotation records the account's
+  subtotal for its lines when it's issued, including one issued by the desk outside the cart, and
+  the rule also runs when an `accepted_id` is accepted, so a stale desk quotation isn't kept as a
+  premium. The draft spec doesn't settle this yet; see
   the discussion on
   [#929](https://github.com/Universal-Commerce-Protocol/ucp/issues/929#issuecomment-7151328635).
 

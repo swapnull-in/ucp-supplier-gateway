@@ -136,7 +136,8 @@ export function registerCartRoutes(app: FastifyInstance, base: string, deps: Car
           const answer: { status: "quoted" | "declined"; subtotal?: number; message?: string } = { status };
           if (subtotal !== undefined) answer.subtotal = subtotal as number;
           if (typeof message === "string") answer.message = message;
-          cart.quote = answerPending(cart.quote, answer, deps.now(), deps.quotationTtlMs);
+          const priced = status === "quoted" ? priceLines(cart.lines, await deps.backend.getProducts(cart.lines.map((l) => l.itemId), ownerAccount(cart.owner))) : undefined;
+          cart.quote = answerPending(cart.quote, answer, deps.now(), deps.quotationTtlMs, priced?.subtotal);
         } catch (err) {
           return reply.code(409).send(errorResponse("invalid_state", (err as Error).message));
         }
@@ -158,10 +159,17 @@ export function registerCartRoutes(app: FastifyInstance, base: string, deps: Car
           return reply.code(400).send(errorResponse("invalid_request", "account_id, currency (ISO 4217) and subtotal (minor units) are required"));
         }
         const hours = typeof expires_in_hours === "number" && expires_in_hours > 0 ? expires_in_hours : deps.quotationTtlMs / 3600_000;
+        // Record the account's price for these lines now, so a quotation gone stale by the time
+        // it's accepted can be told apart from a premium set on purpose.
+        const priced = priceLines(parsed.lines, await deps.backend.getProducts(parsed.lines.map((l) => l.itemId), { id: account_id, name: account_id }));
+        if (priced.lines.length !== parsed.lines.length || priced.currency !== currency) {
+          return reply.code(400).send(errorResponse("invalid_request", `Every line must be orderable for ${account_id} and priced in ${currency}`));
+        }
         const quote = await deps.quoteBook.issue({
           accountId: account_id,
           binding: lineBinding({ currency, lines: parsed.lines }),
           subtotal: subtotal as number,
+          listSubtotal: priced.subtotal,
           expiresAt: new Date(deps.now().getTime() + hours * 3600_000),
         });
         return reply.code(201).send({ id: quote.id, subtotal: quote.subtotal, expires_at: quote.expiresAt.toISOString() });
@@ -173,6 +181,12 @@ export function registerCartRoutes(app: FastifyInstance, base: string, deps: Car
 /** Fetches the out-of-band quotation an `accepted_id` names, so the pure state machine can bind it. */
 export async function lookupExternal(deps: Pick<CartDeps, "quoteBook">, quote: QuoteRequest | undefined): Promise<ExternalQuote | undefined> {
   return quote?.accepted_id ? deps.quoteBook.get(quote.accepted_id) : undefined;
+}
+
+/** The buyer account behind a cart owner (`acct:<id>`), for Business-side repricing. */
+function ownerAccount(owner: string): BuyerAccount | undefined {
+  const id = owner.startsWith("acct:") ? owner.slice(5) : undefined;
+  return id ? { id, name: id } : undefined;
 }
 
 export interface Caller {

@@ -35,6 +35,8 @@ export interface ExternalQuote {
   accountId: string;
   binding: string;
   subtotal: number;
+  /** The account's subtotal for the bound lines when the quotation was issued (see `repriceDown`). */
+  listSubtotal: number;
   expiresAt: Date;
 }
 
@@ -128,7 +130,7 @@ function repriceDown(result: { state: QuoteState; messages: PricingMessage[] }, 
   const { state, messages } = result;
   const holding = state.status === "quoted" || state.status === "accepted";
   if (!holding || state.subtotal === undefined || state.binding !== ctx.binding) return result;
-  // Quotations answered or issued without pricing the lines take the first price seen as list.
+  // Every quotation records its list subtotal at issue; this fallback only covers older state.
   const listSubtotal = state.listSubtotal ?? ctx.currentSubtotal;
   if (ctx.currentSubtotal >= Math.min(state.subtotal, listSubtotal)) return { state: { ...state, listSubtotal }, messages };
   const expiresAt = state.status === "quoted" && state.expiresAt ? state.expiresAt : new Date(ctx.now.getTime() + ctx.quotationTtlMs);
@@ -204,7 +206,8 @@ function applyRequest(prev: QuoteState, req: QuoteRequest | undefined, ctx: Quot
     // An out-of-band quotation binds by item ids, quantities and currency, not line ids (#929 §4, §6).
     const external = req.accepted_id === state.id ? undefined : ctx.resolveExternal?.(req.accepted_id);
     if (external && external.accountId === ctx.accountId && external.binding === ctx.binding && ctx.now < external.expiresAt) {
-      state = { status: "accepted", id: external.id, subtotal: external.subtotal, acceptedId: external.id, binding: ctx.binding };
+      // Its list subtotal is the one recorded at issue, so a stale quotation is caught on accept (#930 review).
+      state = { status: "accepted", id: external.id, subtotal: external.subtotal, listSubtotal: external.listSubtotal, acceptedId: external.id, binding: ctx.binding };
       return { state, messages };
     }
     messages.push(changed(`Quotation ${req.accepted_id} can't be accepted: it is unknown, superseded, expired or for different line items.`));
@@ -213,7 +216,14 @@ function applyRequest(prev: QuoteState, req: QuoteRequest | undefined, ctx: Quot
 }
 
 /** Business-side answer to a pending proposal (e.g. from a sales rep's review). */
-export function answerPending(prev: QuoteState, answer: { status: "quoted" | "declined"; subtotal?: number; message?: string }, now: Date, ttlMs: number): QuoteState {
+export function answerPending(
+  prev: QuoteState,
+  answer: { status: "quoted" | "declined"; subtotal?: number; message?: string },
+  now: Date,
+  ttlMs: number,
+  /** The account's current subtotal for the proposal's lines, recorded as the quotation's list. */
+  listSubtotal?: number,
+): QuoteState {
   if (prev.status !== "pending") throw new Error(`No pending proposal (status: ${prev.status ?? "idle"})`);
   const next: QuoteState = { ...prev, status: answer.status };
   if (answer.message) next.message = answer.message;
@@ -221,6 +231,7 @@ export function answerPending(prev: QuoteState, answer: { status: "quoted" | "de
     if (answer.subtotal === undefined) throw new Error("A quotation needs a subtotal");
     next.id = newQuoteId();
     next.subtotal = answer.subtotal;
+    if (listSubtotal !== undefined) next.listSubtotal = listSubtotal;
     next.expiresAt = new Date(now.getTime() + ttlMs);
   }
   return next;

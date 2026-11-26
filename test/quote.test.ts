@@ -148,7 +148,7 @@ describe("empty proposal policy (the MAY discussed on #929)", () => {
 });
 
 describe("out-of-band quotations (accepted by id on a cart)", () => {
-  const external: ExternalQuote = { id: "qt_desk_1", accountId: "acme", binding: "lines-A", subtotal: 90_000, expiresAt: new Date(T0.getTime() + DAY) };
+  const external: ExternalQuote = { id: "qt_desk_1", accountId: "acme", binding: "lines-A", listSubtotal: 100_000, subtotal: 90_000, expiresAt: new Date(T0.getTime() + DAY) };
   const withBook = (over: Partial<QuoteContext> = {}) => ctx({ resolveExternal: (id) => (id === external.id ? external : undefined), ...over });
 
   it("binds when account, items and quantities match and it hasn't expired", () => {
@@ -202,7 +202,7 @@ describe("a quotation never stands above a fallen price (raised on #929)", () =>
   });
 
   it("a quotation set above list on purpose stands until the price falls below list", () => {
-    const external: ExternalQuote = { id: "qt_desk_hi", accountId: "acme", binding: "lines-A", subtotal: 104_000, expiresAt: new Date(T0.getTime() + DAY) };
+    const external: ExternalQuote = { id: "qt_desk_hi", accountId: "acme", binding: "lines-A", subtotal: 104_000, listSubtotal: 100_000, expiresAt: new Date(T0.getTime() + DAY) };
     const held = advanceQuote({}, { accepted_id: "qt_desk_hi" }, ctx({ resolveExternal: () => external }));
     expect(held.state).toMatchObject({ status: "accepted", id: "qt_desk_hi", subtotal: 104_000, listSubtotal: 100_000 });
     expect(held.messages).toEqual([]);
@@ -211,6 +211,16 @@ describe("a quotation never stands above a fallen price (raised on #929)", () =>
     const fell = advanceQuote(held.state, undefined, ctx({ currentSubtotal: 97_000 }));
     expect(fell.state).toMatchObject({ status: "quoted", subtotal: 97_000 });
     expect(fell.messages[0]).toMatchObject({ code: "quote_changed" });
+  });
+
+  it("a desk quotation gone stale is re-issued when it's accepted, not kept as a premium (#930 review)", () => {
+    // Issued at list (104,000); the account price has since fallen to 100,000.
+    const external: ExternalQuote = { id: "qt_desk_stale", accountId: "acme", binding: "lines-A", subtotal: 104_000, listSubtotal: 104_000, expiresAt: new Date(T0.getTime() + DAY) };
+    const { state, messages } = advanceQuote({}, { accepted_id: "qt_desk_stale" }, ctx({ resolveExternal: () => external }));
+    expect(state).toMatchObject({ status: "quoted", subtotal: 100_000 });
+    expect(state.id).not.toBe("qt_desk_stale");
+    expect(quoteAdjustment(state, 100_000)).toBeUndefined();
+    expect(messages).toEqual([expect.objectContaining({ code: "quote_changed" })]);
   });
 
   it("pending and declined proposals are unaffected", () => {

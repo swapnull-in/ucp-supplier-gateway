@@ -286,6 +286,31 @@ describe("price falls after acceptance (raised on #929)", () => {
   });
 });
 
+describe("a desk quotation gone stale before it's accepted (raised on #930)", () => {
+  it("is re-issued at today's price when accepted, not kept as a premium", async () => {
+    let unit = 1180;
+    const backend: CommerceBackend = {
+      searchProducts: async () => [],
+      getProducts: async (): Promise<CatalogProduct[]> => [{ id: "SG-220", title: "Gloves", description: "", categories: [], price: { amount: unit, currency: "USD" }, stock: { status: "in_stock" } }],
+    };
+    const local = makeApp(backend);
+    // The desk quotes $11,800 for 1,000 at the account's price that day.
+    const issued = (await local.inject({
+      method: "POST", url: "/admin/quotes", headers: { "x-admin-token": "admin-secret" },
+      payload: { account_id: "acme_industrial", currency: "USD", subtotal: 1_180_000, line_items: lines(["SG-220", 1000]) },
+    })).json();
+    unit = 1120; // the account price falls to $11,200 before the buyer accepts
+    const cart = (await local.inject({ method: "POST", url: "/ucp/carts", headers: ACME, payload: { line_items: lines(["SG-220", 1000]), quote: { accepted_id: issued.id } } })).json();
+    expectValid(schemas.validateAbsolute(CART_WITH_QUOTE, cart));
+    expect(cart.quote).toMatchObject({ status: "quoted", subtotal: 1_120_000 });
+    expect(cart.quote.id).not.toBe(issued.id);
+    expect(cart.totals.some((t: { type: string }) => t.type === "quote")).toBe(false);
+    expect(totalOf(cart, "total")).toBe(1_120_000);
+    expect(cart.messages).toContainEqual(expect.objectContaining({ code: "quote_changed" }));
+    await local.close();
+  });
+});
+
 describe("idempotency on carts", () => {
   const body = JSON.stringify({ line_items: lines(["SG-220", 3]) });
   const post = (payload: string, key: string, headers = ACME) =>
