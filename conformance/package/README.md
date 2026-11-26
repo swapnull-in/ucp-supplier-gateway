@@ -16,11 +16,17 @@ npx ucp-quote-conformance --origin https://business.example --token <buyer acces
 | `--item SKU:QTY` | Orderable test items (repeat); a second item enables the extra-line check |
 | `--proposal <subtotal>` | For a Business that answers `{}` with `quote_unavailable`: a subtotal it will quote |
 | `--admin-token`, `--account-id` | Business hooks for the withdraw and out-of-band vectors (implemented for [ucp-supplier-gateway](https://github.com/swapnull-in/ucp-supplier-gateway)'s admin routes) |
+| `--place-orders` | Complete test checkouts to check the Order (Q-ORDER, Q-DONE). **This places real orders on the Business** |
 | `--json` | Machine-readable results |
 
-Each vector cites the #929 section it checks. Vectors a black box can't observe (expiry over
-time, Checkout and Order projection, Platform behaviour) are reported **N/A** with the reason,
-never as passes. Exit code: 0 all observable vectors pass, 1 a vector failed, 2 bad usage.
+Each vector cites the #929 section it checks. If the Business advertises Checkout, Q-CO checks
+that Cart to Checkout keeps the quote's id and status, and cancels the test checkouts afterwards;
+the token needs `dev.ucp.shopping.checkout:manage`, or these vectors are skipped. Vectors a black
+box can't observe (expiry over time, currency or unit changes, Platform behaviour) are reported
+**N/A** with the reason, never as passes. Exit code: 0 all observable vectors pass, 1 a vector
+failed, 2 bad usage.
+
+Also available as a GitHub Action: `uses: swapnull-in/ucp-supplier-gateway@v0.2.1`.
 
 The UCP schemas (release 2026-08-25, plus the #930 draft) are bundled, so there are no runtime
 dependencies. Source, vectors and tests:
