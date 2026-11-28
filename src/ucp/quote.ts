@@ -206,6 +206,14 @@ function applyRequest(prev: QuoteState, req: QuoteRequest | undefined, ctx: Quot
     // An out-of-band quotation binds by item ids, quantities and currency, not line ids (#929 §4, §6).
     const external = req.accepted_id === state.id ? undefined : ctx.resolveExternal?.(req.accepted_id);
     if (external && external.accountId === ctx.accountId && external.binding === ctx.binding && ctx.now < external.expiresAt) {
+      // A stale quotation doesn't displace one the Cart holds at or below today's price: re-issuing
+      // it would leave the Buyer worse off than before they accepted (#930 review).
+      const stale = ctx.currentSubtotal < Math.min(external.subtotal, external.listSubtotal);
+      const held = (state.status === "quoted" || state.status === "accepted") && state.subtotal !== undefined && state.subtotal <= ctx.currentSubtotal;
+      if (stale && held) {
+        messages.push(changed(`Quotation ${external.id} is above today's price for these line items, so it wasn't applied; quotation ${state.id} still stands.`));
+        return { state, messages };
+      }
       // Its list subtotal is the one recorded at issue, so a stale quotation is caught on accept (#930 review).
       state = { status: "accepted", id: external.id, subtotal: external.subtotal, listSubtotal: external.listSubtotal, acceptedId: external.id, binding: ctx.binding };
       return { state, messages };

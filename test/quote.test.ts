@@ -223,6 +223,26 @@ describe("a quotation never stands above a fallen price (raised on #929)", () =>
     expect(messages).toEqual([expect.objectContaining({ code: "quote_changed" })]);
   });
 
+  it("a stale desk quotation doesn't displace a quotation held at or below today's price (#930 review)", () => {
+    const external: ExternalQuote = { id: "qt_desk_stale", accountId: "acme", binding: "lines-A", subtotal: 104_000, listSubtotal: 104_000, expiresAt: new Date(T0.getTime() + DAY) };
+    const c = ctx({ resolveExternal: () => external });
+    for (const held of [propose(97_500).state, propose().state]) {
+      const { state, messages } = advanceQuote(held, { accepted_id: "qt_desk_stale" }, c);
+      expect(state).toEqual(held);
+      expect(messages).toEqual([expect.objectContaining({ code: "quote_changed", content: expect.stringContaining(`${held.id} still stands`) })]);
+    }
+  });
+
+  it("a stale desk quotation still replaces a held quotation that is above today's price", () => {
+    const external: ExternalQuote = { id: "qt_desk_stale", accountId: "acme", binding: "lines-A", subtotal: 104_000, listSubtotal: 104_000, expiresAt: new Date(T0.getTime() + DAY) };
+    const premium: ExternalQuote = { id: "qt_desk_hi", accountId: "acme", binding: "lines-A", subtotal: 102_000, listSubtotal: 100_000, expiresAt: new Date(T0.getTime() + DAY) };
+    const book = (id: string) => [external, premium].find((q) => q.id === id);
+    const held = advanceQuote({}, { accepted_id: "qt_desk_hi" }, ctx({ resolveExternal: book })).state;
+    const { state, messages } = advanceQuote(held, { accepted_id: "qt_desk_stale" }, ctx({ resolveExternal: book }));
+    expect(state).toMatchObject({ status: "quoted", subtotal: 100_000 });
+    expect(messages).toEqual([expect.objectContaining({ code: "quote_changed" })]);
+  });
+
   it("pending and declined proposals are unaffected", () => {
     expect(advanceQuote(propose(92_000).state, undefined, ctx({ currentSubtotal: 50_000 })).state.status).toBe("pending");
     expect(advanceQuote(propose(10_000).state, undefined, ctx({ currentSubtotal: 5_000 })).state.status).toBe("declined");

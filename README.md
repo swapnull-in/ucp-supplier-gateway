@@ -52,7 +52,7 @@ Requires Node.js 22+ and pnpm.
 
 ```bash
 pnpm install
-pnpm test          # 111 tests, including schema conformance and a real MCP client
+pnpm test          # 115 tests, including schema conformance and a real MCP client
 pnpm start         # mock SAP OCC on :9002, gateway on :8080
 ```
 
@@ -157,7 +157,7 @@ npx ucp-quote-conformance --origin https://business.example --token <buyer acces
 or in CI, as a GitHub Action:
 
 ```yaml
-- uses: swapnull-in/ucp-supplier-gateway@v0.2.1
+- uses: swapnull-in/ucp-supplier-gateway@v0.2.2
   with:
     origin: https://business.example
     token: ${{ secrets.UCP_TEST_BUYER_TOKEN }}
