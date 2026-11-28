@@ -128,6 +128,19 @@ describe("UCP MCP binding", () => {
     await badToken.close();
   });
 
+  it("serves a bare tools/call with no initialize and an HTTP library's default Accept", async () => {
+    // As Google's ADK commerce codelab client sends it (httpx: Accept */*).
+    for (const accept of ["*/*", undefined]) {
+      const res = await fetch(mcpUrl, {
+        method: "POST",
+        headers: { "content-type": "application/json", ...(accept ? { accept } : {}) },
+        body: JSON.stringify({ jsonrpc: "2.0", id: "1", method: "tools/call", params: { name: "search_catalog", arguments: { meta: META, catalog: { query: "bolt" } } } }),
+      });
+      expect(res.status).toBe(200);
+      expect((await res.json()).result.structuredContent.products.length).toBeGreaterThan(0);
+    }
+  });
+
   it("rejects calls without the required ucp-agent metadata", async () => {
     const client = await connect();
     await expect(client.callTool({ name: "search_catalog", arguments: { catalog: { query: "bolt" } } }))

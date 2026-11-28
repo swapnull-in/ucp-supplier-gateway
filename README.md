@@ -52,7 +52,7 @@ Requires Node.js 22+ and pnpm.
 
 ```bash
 pnpm install
-pnpm test          # 115 tests, including schema conformance and a real MCP client
+pnpm test          # 117 tests, including schema conformance and a real MCP client
 pnpm start         # mock SAP OCC on :9002, gateway on :8080
 ```
 
@@ -157,7 +157,7 @@ npx ucp-quote-conformance --origin https://business.example --token <buyer acces
 or in CI, as a GitHub Action:
 
 ```yaml
-- uses: swapnull-in/ucp-supplier-gateway@v0.2.2
+- uses: swapnull-in/ucp-supplier-gateway@v0.2.3
   with:
     origin: https://business.example
     token: ${{ secrets.UCP_TEST_BUYER_TOKEN }}
@@ -231,7 +231,8 @@ passes UCP authority binding.
   identity-linking OAuth server.
 - **No request signature verification** (RFC 9421) yet.
 - **In-memory stores** for carts, checkouts, orders and idempotency keys; production needs Postgres.
-- **On-account payment only.** No payment handlers or instruments, no tax or shipping calculation
+- **On-account payment only.** No payment handlers; a complete that sends a payment instrument is
+  refused with `payment_failed` rather than invoiced. No tax or shipping calculation
   (they go on the invoice), no fulfillment selection, and orders aren't sent to the backend yet.
   No confirmation email, which UCP requires of a production Business.
 - **The quote extension follows a draft** (#929 / PR #930) and will change with it. It is served

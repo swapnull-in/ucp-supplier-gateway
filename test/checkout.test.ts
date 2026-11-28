@@ -232,6 +232,18 @@ describe("Complete Checkout and the Order", () => {
     const co = (await call("POST", "/ucp/checkout-sessions", { line_items: lines(10) })).body;
     expect((await call("POST", `/ucp/checkout-sessions/${co.id}/complete`, {})).status).toBe(400);
   });
+
+  it("doesn't place an order on account when the Platform sends a payment instrument", async () => {
+    const co = (await call("POST", "/ucp/checkout-sessions", { line_items: lines(10) })).body;
+    const card = { id: "instr_1", handler_id: "card_x", type: "card", selected: true, credential: { type: "ap2_payment_mandate", token: "x.y.z" } };
+    const refused = (await call("POST", `/ucp/checkout-sessions/${co.id}/complete`, { payment: { instruments: [card] } })).body;
+    expect(refused.status).toBe("ready_for_complete");
+    expect(refused.order).toBeUndefined();
+    expect(refused.messages).toContainEqual(expect.objectContaining({ code: "payment_failed", path: "$.payment.instruments" }));
+    expectValidCheckout(refused);
+    const done = (await call("POST", `/ucp/checkout-sessions/${co.id}/complete`, { payment: { instruments: [] } })).body;
+    expect(done.status).toBe("completed");
+  });
 });
 
 describe("Checkout without a buyer account", () => {

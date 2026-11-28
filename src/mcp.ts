@@ -75,7 +75,7 @@ function inputSchema(route: ToolRoute) {
 /** Statuses that are protocol errors under UCP's two-layer model; everything else is a result. */
 const PROTOCOL_ERROR_STATUSES = new Set([400, 401, 403, 409, 413, 429]);
 
-export function registerMcp(app: FastifyInstance, path: string, restBase: string, serverInfo = { name: "ucp-supplier-gateway", version: "0.2.2" }) {
+export function registerMcp(app: FastifyInstance, path: string, restBase: string, serverInfo = { name: "ucp-supplier-gateway", version: "0.2.3" }) {
   app.post(path, async (req, reply) => {
     const authorization = req.headers.authorization;
     const headerKey = req.headers["idempotency-key"];
@@ -123,6 +123,10 @@ export function registerMcp(app: FastifyInstance, path: string, restBase: string
 
     // No sessionIdGenerator: stateless mode. JSON responses instead of SSE, since tools reply once.
     const transport = new StreamableHTTPServerTransport({ enableJsonResponse: true });
+    // The SDK requires Accept to name both JSON and SSE, but UCP clients often send none or */*
+    // (an HTTP library's default). Both accept a JSON reply, so they're served rather than refused.
+    const accept = req.raw.headers.accept;
+    if (!accept || accept.includes("*/*")) req.raw.headers.accept = "application/json, text/event-stream";
     reply.hijack();
     reply.raw.on("close", () => {
       void transport.close();

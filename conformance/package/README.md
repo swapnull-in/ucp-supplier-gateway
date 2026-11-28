@@ -26,7 +26,7 @@ box can't observe (expiry over time, currency or unit changes, Platform behaviou
 **N/A** with the reason, never as passes. Exit code: 0 all observable vectors pass, 1 a vector
 failed, 2 bad usage.
 
-Also available as a GitHub Action: `uses: swapnull-in/ucp-supplier-gateway@v0.2.2`.
+Also available as a GitHub Action: `uses: swapnull-in/ucp-supplier-gateway@v0.2.3`.
 
 The UCP schemas (release 2026-08-25, plus the #930 draft) are bundled, so there are no runtime
 dependencies. Source, vectors and tests:

@@ -49,7 +49,10 @@ describe("GET /.well-known/ucp", () => {
     const res = await app.inject({ method: "GET", url: "/.well-known/ucp" });
     expect(res.statusCode).toBe(200);
     expectValid("profile.json#/$defs/business_schema", res.json());
-    expect(res.json().ucp.services["dev.ucp.shopping"][0].endpoint).toBe("https://agents.supplier.example/ucp");
+    expect(res.json().ucp.services["dev.ucp.shopping"].map((s: { transport: string; endpoint: string }) => [s.transport, s.endpoint])).toEqual([
+      ["mcp", "https://agents.supplier.example/ucp/mcp"],
+      ["rest", "https://agents.supplier.example/ucp"],
+    ]);
   });
 });
 

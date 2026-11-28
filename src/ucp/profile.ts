@@ -21,19 +21,20 @@ export function businessProfile({ publicOrigin, shoppingBase, quoteCapability, q
       version: UCP_VERSION,
       services: {
         "dev.ucp.shopping": [
-          {
-            version: UCP_VERSION,
-            spec: `${SPEC}/overview`,
-            transport: "rest",
-            schema: `https://ucp.dev/${UCP_VERSION}/services/shopping/rest.openapi.json`,
-            endpoint: `${publicOrigin}${shoppingBase}`,
-          },
+          // MCP first: some clients take the first entry without checking its transport.
           {
             version: UCP_VERSION,
             spec: `${SPEC}/overview`,
             transport: "mcp",
             schema: `https://ucp.dev/${UCP_VERSION}/services/shopping/mcp.openrpc.json`,
             endpoint: `${publicOrigin}${shoppingBase}/mcp`,
+          },
+          {
+            version: UCP_VERSION,
+            spec: `${SPEC}/overview`,
+            transport: "rest",
+            schema: `https://ucp.dev/${UCP_VERSION}/services/shopping/rest.openapi.json`,
+            endpoint: `${publicOrigin}${shoppingBase}`,
           },
         ],
       },

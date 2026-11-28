@@ -27,7 +27,7 @@ interface CheckoutBody {
   cart_id?: unknown;
   line_items?: unknown;
   quote?: unknown;
-  payment?: { selected_term_id?: unknown };
+  payment?: { selected_term_id?: unknown; instruments?: unknown };
 }
 
 /** Changes the Buyer didn't ask for: completing over one would charge a total they haven't seen. */
@@ -132,6 +132,8 @@ export function registerCheckoutRoutes(app: FastifyInstance, base: string, deps:
     if (typeof req.body?.payment !== "object" || req.body.payment === null) {
       return reply.code(400).send(errorResponse("invalid_request", "payment is required on complete"));
     }
+    const instruments = req.body.payment.instruments ?? [];
+    if (!Array.isArray(instruments)) return reply.code(400).send(errorResponse("invalid_request", "payment.instruments must be an array"));
 
     return idempotent(req, reply, deps, `${caller.owner}|checkout.complete:${req.params.id}`, async () => {
       const checkout = await ownCheckout(req.params.id, caller.owner);
@@ -142,7 +144,18 @@ export function registerCheckoutRoutes(app: FastifyInstance, base: string, deps:
       // Reprice first. If that changed what the Buyer pays, return the new state instead of
       // completing, so the order is placed only at a total the Buyer has seen.
       const current = await render(checkout, caller);
-      const unseen = [...current.messages, ...current.result.messages].some((m) => UNSEEN_CHANGES.has(m.code));
+      // No payment handlers are offered: orders are paid on account under the selected term. An
+      // instrument means the Platform expects to pay some other way, so placing the order would
+      // charge the Buyer in a way they didn't authorize.
+      if (instruments.length > 0) {
+        const unsupported = {
+          type: "error", code: "payment_failed", severity: "recoverable", path: "$.payment.instruments",
+          content: "This supplier takes no payment instruments: orders are invoiced to the account under the selected payment term. Complete with no instruments to order on account.",
+        };
+        const messages = [...((current.body.messages as unknown[]) ?? []), unsupported];
+        return { statusCode: 200, body: { ...current.body, messages } };
+      }
+      const unseen =[...current.messages, ...current.result.messages].some((m) => UNSEEN_CHANGES.has(m.code));
       if (current.result.status !== "ready_for_complete" || unseen) return { statusCode: 200, body: current.body };
 
       const now = deps.now();
